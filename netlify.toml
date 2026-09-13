@@ -1,0 +1,23 @@
+[build]
+  functions = "netlify/functions"
+  publish = "."
+
+# Keeps the same clean /api/... URLs you'd have used on Vercel, instead of
+# Netlify's default /.netlify/functions/... paths. Framer's "Submit endpoint
+# URL" and "Availability check URL" panel fields should point at the /api/
+# versions below.
+
+[[redirects]]
+  from = "/api/create-booking"
+  to = "/.netlify/functions/create-booking"
+  status = 200
+
+[[redirects]]
+  from = "/api/camp-availability"
+  to = "/.netlify/functions/camp-availability"
+  status = 200
+
+[[redirects]]
+  from = "/api/stripe-webhook"
+  to = "/.netlify/functions/stripe-webhook"
+  status = 200
