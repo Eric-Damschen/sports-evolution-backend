@@ -14,7 +14,7 @@
 //   GOOGLE_SHEET_ID
 //   STRIPE_SECRET_KEY
 //   RESEND_API_KEY
-//   SITE_URL                  e.g. https://sportsevolution.lu
+//   SITE_URL                  e.g. https://sportsevolution.lu (NO trailing slash)
 //
 // Reachable at /.netlify/functions/create-booking, or /api/create-booking
 // if you keep the redirect in netlify.toml (recommended — see that file).
@@ -163,6 +163,10 @@ exports.handler = async (event) => {
         )
 
         // --- 4. Create the Stripe Checkout session ------------------------------
+        // NOTE: camp name is passed through encodeURIComponent() below because
+        // camp names can contain spaces and parentheses (e.g. "Test (football)"),
+        // which are not valid raw characters in a URL and cause Stripe to reject
+        // the request with a "url_invalid" error on cancel_url.
         const session = await stripe.checkout.sessions.create({
             mode: "payment",
             payment_method_types: ["card"],
@@ -179,7 +183,7 @@ exports.handler = async (event) => {
             ],
             metadata: { bookingId },
             success_url: `${process.env.SITE_URL}/booking-confirmed?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.SITE_URL}/camps/${camp.toLowerCase()}`,
+            cancel_url: `${process.env.SITE_URL}/camps/${encodeURIComponent(camp.toLowerCase())}`,
         })
 
         return {
