@@ -1,14 +1,22 @@
-// /api/camp-availability.js
-// Called by the Framer form on page load to find out how many spots are
-// left. GET /api/camp-availability?camp=Rodange%20(football)
+// /api/create-booking.js
+// Runs the moment the buyer clicks "Confirm & pay" in the Framer form.
 //
-// ★ SECURITY: "capacity" is no longer trusted from the query string. It's
-// looked up server-side from the "Camps" tab, same source create-booking.js
-// uses — otherwise anyone could fake a high capacity in the URL and make a
-// sold-out camp look open.
+// The checkout amount and capacity limit are taken directly from what the
+// booking form sends — no separate pricing list, no Camps tab lookup.
+//
+// 1. Re-checks capacity against the client-supplied group size
+// 2. Writes one pending row per child to "Bookings"
+// 3. Creates a Stripe Checkout Session for the submitted total
+// 4. Sends a "we've received your request" email
 
 const { google } = require("googleapis")
+const Stripe = require("stripe")
+const { randomUUID } = require("crypto")
 
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+
+// ★ Bookings tab column layout — one row per child. Shared with
+// camp-availability.js — keep both in sync.
 const COL = {
     bookingId: 0, createdAt: 1, camp: 2, firstName: 3, lastName: 4, dob: 5,
     club: 6, allergies: 7, clothingQty: 8, clothingSize: 9, bottleQty: 10,
@@ -17,14 +25,10 @@ const COL = {
 }
 const LAST_COLUMN = "R"
 
-const CAMPS_COL = {
-    campKey: 0, fee: 1, capacity: 2, clothingPrice: 3,
-    clothingDiscountPercent: 4, bottlePrice: 5, mealsPrice: 6,
-}
-
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
 }
 
 async function getSheet() {
@@ -37,16 +41,20 @@ async function getSheet() {
     return google.sheets({ version: "v4", auth })
 }
 
-// ★ Identical to create-booking.js's version — keep both in sync.
-async function getCampCapacity(sheets, campKey) {
-    const result = await sheets.spreadsheets.values.get({
-        spreadsheetId: process.env.GOOGLE_SHEET_ID,
-        range: "Camps!A:G",
+async function sendEmail(to, subject, html) {
+    await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            from: "Sports Evolution <order@sportsevolution.lu>",
+            to,
+            subject,
+            html,
+        }),
     })
-    const rows = result.data.values || []
-    const row = rows.find((r) => r[CAMPS_COL.campKey] === campKey)
-    if (!row) return null
-    return Number(row[CAMPS_COL.capacity]) || 0
 }
 
 async function countBookedSpots(sheets, camp) {
@@ -66,34 +74,108 @@ async function countBookedSpots(sheets, camp) {
     return booked
 }
 
+function campSlug(camp) {
+    return encodeURIComponent(camp.toLowerCase().replace(/\s+/g, "-"))
+}
+
 exports.handler = async (event) => {
     if (event.httpMethod === "OPTIONS") {
         return { statusCode: 200, headers: CORS_HEADERS, body: "" }
     }
-    if (event.httpMethod !== "GET") {
+    if (event.httpMethod !== "POST") {
         return { statusCode: 405, headers: CORS_HEADERS, body: JSON.stringify({ error: "Method not allowed" }) }
     }
 
-    const { camp } = event.queryStringParameters || {}
-    if (!camp) {
-        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: "Missing camp query param" }) }
-    }
-
     try {
-        const sheets = await getSheet()
-        const capacity = await getCampCapacity(sheets, camp)
-        if (capacity === null) {
+        const { camp, children, contact, total, totalSpots, language } = JSON.parse(event.body)
+
+        if (!camp || !Array.isArray(children) || children.length === 0 || !contact) {
             return {
-                statusCode: 404,
+                statusCode: 400,
                 headers: CORS_HEADERS,
-                body: JSON.stringify({ error: `No pricing row found in the Camps tab for "${camp}"` }),
+                body: JSON.stringify({ error: "Missing camp, children, or contact details" }),
             }
         }
-        const booked = await countBookedSpots(sheets, camp)
-        const remaining = Math.max(0, capacity - booked)
-        return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ capacity, booked, remaining }) }
+
+        const bookingId = randomUUID()
+        const sheets = await getSheet()
+
+        // --- 1. Capacity check, against the group size the form sent --------------
+        if (totalSpots) {
+            const booked = await countBookedSpots(sheets, camp)
+            const remaining = Number(totalSpots) - booked
+            if (children.length > remaining) {
+                return {
+                    statusCode: 409,
+                    headers: CORS_HEADERS,
+                    body: JSON.stringify({ error: "notEnoughSpots", remaining: Math.max(0, remaining) }),
+                }
+            }
+        }
+
+        // --- 2. Write one pending row PER CHILD, using the submitted total --------
+        const createdAt = new Date().toISOString()
+        const rows = children.map((child) => [
+            bookingId,
+            createdAt,
+            camp,
+            child.firstName,
+            child.lastName,
+            child.dob,
+            child.club || "",
+            child.allergies || "",
+            child.addOns?.clothingQty || 0,
+            child.addOns?.clothingSize || "",
+            child.addOns?.bottleQty || 0,
+            child.addOns?.meals ? "Yes" : "No",
+            contact.parentName,
+            contact.email,
+            contact.phone,
+            total,
+            "pending",
+            language || "en",
+        ])
+
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: process.env.GOOGLE_SHEET_ID,
+            range: `Bookings!A:${LAST_COLUMN}`,
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values: rows },
+        })
+
+        // --- 3. Create the Stripe Checkout session, for the submitted total -------
+        const session = await stripe.checkout.sessions.create({
+            mode: "payment",
+            payment_method_types: ["card"],
+            customer_email: contact.email,
+            line_items: [
+                {
+                    price_data: {
+                        currency: "eur",
+                        product_data: { name: `${camp} camp booking` },
+                        unit_amount: Math.round(total * 100),
+                    },
+                    quantity: 1,
+                },
+            ],
+            metadata: { bookingId },
+            success_url: `${process.env.SITE_URL}/booking-confirmed?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.SITE_URL}/camps/${campSlug(camp)}`,
+        })
+
+        // --- 4. Email — sent only after the Stripe session exists ------------------
+        await sendEmail(
+            contact.email,
+            `We've received your ${camp} camp booking`,
+            `<p>Hi ${contact.parentName},</p>
+             <p>We've received your booking request for <strong>${camp}</strong>
+             (${children.length} ${children.length === 1 ? "child" : "children"}).</p>
+             <p>Complete payment to secure the spot — total due: €${total}.</p>`
+        )
+
+        return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ checkoutUrl: session.url }) }
     } catch (err) {
         console.error(err)
-        return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: "Could not check availability" }) }
+        return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: "Could not create booking" }) }
     }
 }
