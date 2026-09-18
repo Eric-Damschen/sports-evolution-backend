@@ -1,12 +1,14 @@
-// netlify/functions/camp-availability.js
+// /api/camp-availability.js
 // Called by the Framer form on page load to find out how many spots are
-// left. GET /api/camp-availability?camp=Rodange%20(football)&capacity=48
+// left. GET /api/camp-availability?camp=Rodange%20(football)
 //
-// Same env vars as create-booking.js (Google service account + sheet ID).
+// ★ SECURITY: "capacity" is no longer trusted from the query string. It's
+// looked up server-side from the "Camps" tab, same source create-booking.js
+// uses — otherwise anyone could fake a high capacity in the URL and make a
+// sold-out camp look open.
 
 const { google } = require("googleapis")
 
-// ★ Must match create-booking.js and stripe-webhook.js exactly — one row = one child.
 const COL = {
     bookingId: 0, createdAt: 1, camp: 2, firstName: 3, lastName: 4, dob: 5,
     club: 6, allergies: 7, clothingQty: 8, clothingSize: 9, bottleQty: 10,
@@ -14,6 +16,11 @@ const COL = {
     status: 16, language: 17,
 }
 const LAST_COLUMN = "R"
+
+const CAMPS_COL = {
+    campKey: 0, fee: 1, capacity: 2, clothingPrice: 3,
+    clothingDiscountPercent: 4, bottlePrice: 5, mealsPrice: 6,
+}
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -30,7 +37,18 @@ async function getSheet() {
     return google.sheets({ version: "v4", auth })
 }
 
-// ★ Identical to the copy in create-booking.js — keep both in sync if you edit this.
+// ★ Identical to create-booking.js's version — keep both in sync.
+async function getCampCapacity(sheets, campKey) {
+    const result = await sheets.spreadsheets.values.get({
+        spreadsheetId: process.env.GOOGLE_SHEET_ID,
+        range: "Camps!A:G",
+    })
+    const rows = result.data.values || []
+    const row = rows.find((r) => r[CAMPS_COL.campKey] === campKey)
+    if (!row) return null
+    return Number(row[CAMPS_COL.capacity]) || 0
+}
+
 async function countBookedSpots(sheets, camp) {
     const result = await sheets.spreadsheets.values.get({
         spreadsheetId: process.env.GOOGLE_SHEET_ID,
@@ -53,37 +71,29 @@ exports.handler = async (event) => {
         return { statusCode: 200, headers: CORS_HEADERS, body: "" }
     }
     if (event.httpMethod !== "GET") {
-        return {
-            statusCode: 405,
-            headers: CORS_HEADERS,
-            body: JSON.stringify({ error: "Method not allowed" }),
-        }
+        return { statusCode: 405, headers: CORS_HEADERS, body: JSON.stringify({ error: "Method not allowed" }) }
     }
 
-    const { camp, capacity } = event.queryStringParameters || {}
-    if (!camp || !capacity) {
-        return {
-            statusCode: 400,
-            headers: CORS_HEADERS,
-            body: JSON.stringify({ error: "Missing camp or capacity query param" }),
-        }
+    const { camp } = event.queryStringParameters || {}
+    if (!camp) {
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: "Missing camp query param" }) }
     }
 
     try {
         const sheets = await getSheet()
-        const booked = await countBookedSpots(sheets, camp)
-        const remaining = Math.max(0, Number(capacity) - booked)
-        return {
-            statusCode: 200,
-            headers: CORS_HEADERS,
-            body: JSON.stringify({ capacity: Number(capacity), booked, remaining }),
+        const capacity = await getCampCapacity(sheets, camp)
+        if (capacity === null) {
+            return {
+                statusCode: 404,
+                headers: CORS_HEADERS,
+                body: JSON.stringify({ error: `No pricing row found in the Camps tab for "${camp}"` }),
+            }
         }
+        const booked = await countBookedSpots(sheets, camp)
+        const remaining = Math.max(0, capacity - booked)
+        return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ capacity, booked, remaining }) }
     } catch (err) {
         console.error(err)
-        return {
-            statusCode: 500,
-            headers: CORS_HEADERS,
-            body: JSON.stringify({ error: "Could not check availability" }),
-        }
+        return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: "Could not check availability" }) }
     }
 }
