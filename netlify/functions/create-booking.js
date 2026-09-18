@@ -159,8 +159,11 @@ exports.handler = async (event) => {
                 },
             ],
             metadata: { bookingId },
-            success_url: `${process.env.SITE_URL}/booking-confirmed?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.SITE_URL}/camps/${campSlug(camp)}`,
+            // ★ Temporary — redirects to the main site until the real
+            // confirmation page exists. Once it does, change back to:
+            // `${process.env.SITE_URL}/booking-confirmed?session_id={CHECKOUT_SESSION_ID}`
+            success_url: `${process.env.SITE_URL}`,
+            cancel_url: `${process.env.SITE_URL}`,
         })
 
         // --- 4. Email — sent only after the Stripe session exists ------------------
