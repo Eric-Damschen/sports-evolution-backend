@@ -1,4 +1,4 @@
-// netlify/functions/stripe-webhook.js
+// /api/stripe-webhook.js
 // Stripe calls this endpoint directly (not the buyer's browser) the moment
 // a payment succeeds. Register this URL in the Stripe Dashboard under
 // Developers → Webhooks, listening for "checkout.session.completed".
@@ -7,9 +7,9 @@
 //   STRIPE_WEBHOOK_SECRET   (shown when you create the webhook in Stripe)
 //
 // Note: unlike Vercel, Netlify already hands you the raw request body as
-// event.body — no extra package (like Vercel's "micro") is needed to read
-// it for signature verification. The only wrinkle: if Netlify marked the
-// body as base64-encoded, it needs decoding first — handled below.
+// event.body — no extra package is needed to read it for signature
+// verification. The only wrinkle: if Netlify marked the body as
+// base64-encoded, it needs decoding first — handled below.
 
 const { google } = require("googleapis")
 const Stripe = require("stripe")
@@ -43,7 +43,7 @@ async function sendEmail(to, subject, html) {
             "Content-Type": "application/json",
         },
         body: JSON.stringify({
-            from: "Sports Evolution <bookings@sportsevolution.lu>",
+            from: "Sports Evolution <order@sportsevolution.lu>",
             to,
             subject,
             html,
