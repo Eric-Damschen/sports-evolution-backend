@@ -7,7 +7,9 @@
 // 1. Re-checks capacity against the client-supplied group size
 // 2. Writes one pending row per child to "Bookings"
 // 3. Creates a Stripe Checkout Session for the submitted total
-// 4. Sends a "we've received your request" email
+//
+// No email is sent from here — only stripe-webhook.js emails the customer,
+// once payment is actually confirmed.
 
 const { google } = require("googleapis")
 const Stripe = require("stripe")
@@ -16,7 +18,7 @@ const { randomUUID } = require("crypto")
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 
 // ★ Bookings tab column layout — one row per child. Shared with
-// camp-availability.js — keep both in sync.
+// camp-availability.js and stripe-webhook.js — keep all three in sync.
 const COL = {
     bookingId: 0, createdAt: 1, camp: 2, firstName: 3, lastName: 4, dob: 5,
     club: 6, allergies: 7, clothingQty: 8, clothingSize: 9, bottleQty: 10,
@@ -39,22 +41,6 @@ async function getSheet() {
         ["https://www.googleapis.com/auth/spreadsheets"]
     )
     return google.sheets({ version: "v4", auth })
-}
-
-async function sendEmail(to, subject, html) {
-    await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            from: "Sports Evolution <info@order.sportsevolution.lu>",
-            to,
-            subject,
-            html,
-        }),
-    })
 }
 
 async function countBookedSpots(sheets, camp) {
@@ -165,16 +151,6 @@ exports.handler = async (event) => {
             success_url: `${process.env.SITE_URL}`,
             cancel_url: `${process.env.SITE_URL}`,
         })
-
-        // --- 4. Email — sent only after the Stripe session exists ------------------
-        await sendEmail(
-            contact.email,
-            `We've received your ${camp} camp booking`,
-            `<p>Hi ${contact.parentName},</p>
-             <p>We've received your booking request for <strong>${camp}</strong>
-             (${children.length} ${children.length === 1 ? "child" : "children"}).</p>
-             <p>Complete payment to secure the spot — total due: €${total}.</p>`
-        )
 
         return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ checkoutUrl: session.url }) }
     } catch (err) {
