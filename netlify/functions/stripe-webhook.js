@@ -3,13 +3,12 @@
 // a payment succeeds. Register this URL in the Stripe Dashboard under
 // Developers → Webhooks, listening for "checkout.session.completed".
 //
+// This is the ONLY place that emails the customer — a detailed payment
+// confirmation, built from the actual booking rows in the Sheet (camp,
+// how many tickets, each child's add-ons).
+//
 // Additional env var needed beyond create-booking.js:
 //   STRIPE_WEBHOOK_SECRET   (shown when you create the webhook in Stripe)
-//
-// Note: unlike Vercel, Netlify already hands you the raw request body as
-// event.body — no extra package is needed to read it for signature
-// verification. The only wrinkle: if Netlify marked the body as
-// base64-encoded, it needs decoding first — handled below.
 
 const { google } = require("googleapis")
 const Stripe = require("stripe")
@@ -51,19 +50,62 @@ async function sendEmail(to, subject, html) {
     })
 }
 
-// ★ One booking can span several rows now (one per child), so this returns
-// EVERY matching row number, not just the first one.
-async function findRowsByBookingId(sheets, bookingId) {
+// ★ One booking can span several rows (one per child). This now returns
+// each matching row's NUMBER (to update its status) together with its full
+// DATA (to build a real, detailed confirmation email) — not just the row
+// numbers like before.
+async function findBookingRows(sheets, bookingId) {
     const result = await sheets.spreadsheets.values.get({
         spreadsheetId: process.env.GOOGLE_SHEET_ID,
-        range: "Bookings!A:A",
+        range: "Bookings!A:R",
     })
     const rows = result.data.values || []
-    const rowNumbers = []
+    const matches = []
     rows.forEach((row, i) => {
-        if (row[COL.bookingId] === bookingId) rowNumbers.push(i + 1) // sheet rows are 1-indexed
+        if (row[COL.bookingId] === bookingId) {
+            matches.push({ rowNumber: i + 1, data: row }) // sheet rows are 1-indexed
+        }
     })
-    return rowNumbers
+    return matches
+}
+
+// ★ Builds the "here's what you booked" section of the email from the
+// actual row data — camp name, ticket count, and each child's add-ons.
+function buildConfirmationHtml(matches) {
+    const first = matches[0].data
+    const camp = first[COL.camp]
+    const total = first[COL.bookingTotal]
+    const ticketCount = matches.length
+
+    const childLines = matches
+        .map(({ data }) => {
+            const name = `${data[COL.firstName]} ${data[COL.lastName]}`.trim()
+            const addOns = []
+            const clothingQty = Number(data[COL.clothingQty]) || 0
+            if (clothingQty > 0) {
+                const size = data[COL.clothingSize]
+                addOns.push(`Clothing set ×${clothingQty}${size ? ` (size ${size})` : ""}`)
+            }
+            const bottleQty = Number(data[COL.bottleQty]) || 0
+            if (bottleQty > 0) addOns.push(`Drinking bottle ×${bottleQty}`)
+            if (data[COL.meals] === "Yes") addOns.push("Meals")
+            const addOnsText = addOns.length > 0 ? addOns.join(", ") : "No add-ons"
+            return `<li><strong>${name}</strong> — ${addOnsText}</li>`
+        })
+        .join("")
+
+    return `
+        <p>Hi ${first[COL.parentName]},</p>
+        <p>Your payment has been received and your booking is confirmed.</p>
+        <table cellpadding="6" style="border-collapse:collapse;">
+            <tr><td><strong>Camp</strong></td><td>${camp}</td></tr>
+            <tr><td><strong>Tickets</strong></td><td>${ticketCount} ${ticketCount === 1 ? "child" : "children"}</td></tr>
+            <tr><td><strong>Total paid</strong></td><td>€${total}</td></tr>
+        </table>
+        <p><strong>Details per child:</strong></p>
+        <ul>${childLines}</ul>
+        <p>See you at camp!</p>
+    `
 }
 
 exports.handler = async (event) => {
@@ -96,10 +138,11 @@ exports.handler = async (event) => {
 
         try {
             const sheets = await getSheet()
-            const rowNumbers = await findRowsByBookingId(sheets, bookingId)
+            const matches = await findBookingRows(sheets, bookingId)
 
+            // Flip every row for this booking to "paid", all together.
             await Promise.all(
-                rowNumbers.map((rowNumber) =>
+                matches.map(({ rowNumber }) =>
                     sheets.spreadsheets.values.update({
                         spreadsheetId: process.env.GOOGLE_SHEET_ID,
                         range: `Bookings!${STATUS_COLUMN_LETTER}${rowNumber}`,
@@ -109,11 +152,11 @@ exports.handler = async (event) => {
                 )
             )
 
-            if (buyerEmail) {
+            if (buyerEmail && matches.length > 0) {
                 await sendEmail(
                     buyerEmail,
                     "Payment confirmed — see you at camp!",
-                    `<p>Your payment has been received. Your booking is confirmed.</p>`
+                    buildConfirmationHtml(matches)
                 )
             }
         } catch (err) {
