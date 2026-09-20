@@ -1,11 +1,14 @@
 [build]
   functions = "netlify/functions"
-  publish = "."
+  # publish was "." — that served the whole repo, source files included.
+  # An empty public/ folder keeps the repo private while the functions still run.
+  publish = "public"
 
-# Keeps the same clean /api/... URLs you'd have used on Vercel, instead of
-# Netlify's default /.netlify/functions/... paths. Framer's "Submit endpoint
-# URL" and "Availability check URL" panel fields should point at the /api/
-# versions below.
+[functions]
+  node_bundler = "esbuild"
+
+# Clean /api/... URLs. status = 200 is a rewrite, so POST bodies and the
+# stripe-signature header pass through byte-for-byte.
 
 [[redirects]]
   from = "/api/create-booking"
