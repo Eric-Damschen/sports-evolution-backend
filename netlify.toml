@@ -1,10 +1,9 @@
 [build]
   functions = "netlify/functions"
-  # publish was "." — that served the whole repo, source files included.
-  # An empty public/ folder keeps the repo private while the functions still run.
-
-[functions]
-  node_bundler = "esbuild"
+  # Serves the repo root, exactly as the previously working setup did.
+  # No separate publish folder is needed, so the deploy cannot fail on a
+  # missing directory. A 404 on "/" is expected — there is no homepage here.
+  publish = "."
 
 # Clean /api/... URLs. status = 200 is a rewrite, so POST bodies and the
 # stripe-signature header pass through byte-for-byte.
