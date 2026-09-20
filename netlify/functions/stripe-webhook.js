@@ -38,7 +38,10 @@ async function getSheet() {
 }
 
 async function sendEmail(to, subject, html) {
-    await fetch("https://api.resend.com/emails", {
+    if (!process.env.RESEND_API_KEY) {
+        throw new Error("RESEND_API_KEY is not set — refusing to send with an empty bearer token")
+    }
+    const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
             Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
@@ -51,6 +54,15 @@ async function sendEmail(to, subject, html) {
             html,
         }),
     })
+    // ★ fetch() does not throw on 4xx/5xx — a rejected send (bad key,
+    // unverified domain, malformed recipient) previously looked identical
+    // to a successful one. Read the body either way and throw on failure
+    // so the real reason shows up in the function logs.
+    const resText = await res.text()
+    if (!res.ok) {
+        throw new Error(`Resend rejected the email — status ${res.status}: ${resText}`)
+    }
+    return resText
 }
 
 async function findBookingRows(sheets, bookingId) {
@@ -170,7 +182,6 @@ exports.handler = async (event) => {
         const bookingId = session.metadata.bookingId
         const dropOffTime = session.metadata.dropOffTime
         const pickUpTime = session.metadata.pickUpTime
-        const buyerEmail = session.customer_details?.email
 
         try {
             const sheets = await getSheet()
@@ -187,21 +198,29 @@ exports.handler = async (event) => {
                 )
             )
 
-            // ★ Diagnostic logging — this exact point is the most common
-            // silent failure: no error is thrown either way, so without
-            // this you'd see a normal 200 response and no clue why the
-            // email didn't send. Check this log after your next test.
+            // ★ Fallback chain for the buyer's address — session.customer_details
+            // is only populated if Checkout was configured to collect it. Fall
+            // back to session.customer_email, then to the email the booking
+            // form itself already captured in the Sheet, so a Stripe-side gap
+            // doesn't suppress an email the form already had a good address for.
+            const buyerEmail =
+                session.customer_details?.email ||
+                session.customer_email ||
+                (matches.length > 0 ? matches[0].data[COL.email] : null)
+
             console.log(`Webhook for booking ${bookingId}: found ${matches.length} row(s), buyerEmail = "${buyerEmail || ""}"`)
 
-            if (buyerEmail && matches.length > 0) {
+            if (matches.length === 0) {
+                console.error(`Skipping email for booking ${bookingId}: no matching Sheet rows found for this booking ID.`)
+            } else if (!buyerEmail) {
+                console.error(`Skipping email for booking ${bookingId}: no buyer address from Stripe or the Sheet.`)
+            } else {
                 await sendEmail(
                     buyerEmail,
                     "Payment confirmed — see you at camp!",
                     buildConfirmationHtml(matches, dropOffTime, pickUpTime)
                 )
                 console.log(`Confirmation email sent to ${buyerEmail} for booking ${bookingId}`)
-            } else {
-                console.log(`Skipped sending email for booking ${bookingId} — see counts above.`)
             }
         } catch (err) {
             console.error("Failed to update sheet / send email:", err)
