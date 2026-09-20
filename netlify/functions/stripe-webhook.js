@@ -392,12 +392,15 @@ function buildCalendarEvent(matches, metadata, t) {
     const end = nextDay(lastDay)
     const location = first[COL.venue] || venueFromCamp(first[COL.camp])
 
+    // Drop-off, pick-up and the good-to-know note only — no booking
+    // reference, which belongs in the email body rather than in a calendar
+    // entry the whole family may see.
     const details = [
-        `${t.reference}: ${first[COL.bookingReference] || ""}`,
         metadata.dropOffTime ? `${t.dropOff}: ${metadata.dropOffTime}` : "",
         metadata.pickUpTime
             ? `${t.pickUp}: ${t.until} ${metadata.pickUpTime}`
             : "",
+        `${t.goodToKnow}: ${t.comingNext}`,
     ]
         .filter(Boolean)
         .join("\n")
@@ -480,6 +483,9 @@ const T = {
         appleCalendar: "For Apple Calendar or Outlook, open the attached invite file.",
         until: "until",
         signOff: "Kind regards,", team: "Your Sports Evolution Team",
+        goodToKnow: "Good to know",
+        comingNext:
+            "We will send you an email with all the necessary information one week before the start of the camp.",
     },
     fr: {
         subject: (ref) => `Paiement confirmé — ${ref}`,
@@ -496,6 +502,9 @@ const T = {
         appleCalendar: "Pour Calendrier Apple ou Outlook, ouvrez le fichier d'invitation joint.",
         until: "jusqu'à",
         signOff: "Cordialement,", team: "Votre équipe Sports Evolution",
+        goodToKnow: "Bon à savoir",
+        comingNext:
+            "Nous vous enverrons un e-mail avec toutes les informations nécessaires une semaine avant le début du stage.",
     },
     de: {
         subject: (ref) => `Zahlung bestätigt — ${ref}`,
@@ -512,6 +521,9 @@ const T = {
         appleCalendar: "Für Apple Kalender oder Outlook öffnen Sie die angehängte Termindatei.",
         until: "bis",
         signOff: "Mit freundlichen Grüßen,", team: "Ihr Sports Evolution Team",
+        goodToKnow: "Gut zu wissen",
+        comingNext:
+            "Eine Woche vor Campbeginn senden wir Ihnen eine E-Mail mit allen notwendigen Informationen.",
     },
     pt: {
         subject: (ref) => `Pagamento confirmado — ${ref}`,
@@ -528,6 +540,9 @@ const T = {
         appleCalendar: "Para o Calendário Apple ou Outlook, abra o ficheiro de convite em anexo.",
         until: "até",
         signOff: "Com os melhores cumprimentos,", team: "A sua equipa Sports Evolution",
+        goodToKnow: "Bom saber",
+        comingNext:
+            "Enviaremos um e-mail com todas as informações necessárias uma semana antes do início do campo.",
     },
 }
 
