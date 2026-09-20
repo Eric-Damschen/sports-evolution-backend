@@ -167,12 +167,21 @@ exports.handler = async (event) => {
                 )
             )
 
+            // ★ Diagnostic logging — this exact point is the most common
+            // silent failure: no error is thrown either way, so without
+            // this you'd see a normal 200 response and no clue why the
+            // email didn't send. Check this log after your next test.
+            console.log(`Webhook for booking ${bookingId}: found ${matches.length} row(s), buyerEmail = "${buyerEmail || ""}"`)
+
             if (buyerEmail && matches.length > 0) {
                 await sendEmail(
                     buyerEmail,
                     "Payment confirmed — see you at camp!",
                     buildConfirmationHtml(matches, dropOffTime, pickUpTime)
                 )
+                console.log(`Confirmation email sent to ${buyerEmail} for booking ${bookingId}`)
+            } else {
+                console.log(`Skipped sending email for booking ${bookingId} — see counts above.`)
             }
         } catch (err) {
             console.error("Failed to update sheet / send email:", err)
