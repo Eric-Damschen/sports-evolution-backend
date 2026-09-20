@@ -1,11 +1,12 @@
 // /api/stripe-webhook.js
 // Stripe calls this endpoint directly the moment a payment succeeds.
 //
-// ★ Column layout matches the actual live Sheet: Role sits at column S
-// (index 18), right after Language — not at the end.
+// ★ Column layout matches the live Sheet. Drop-off/pick-up time are NOT in
+// the Sheet — they're read from the Stripe session's own metadata instead
+// (attached back in create-booking.js), since they're the same for every
+// booking of a given camp rather than per-booking data.
 //
-// This is the ONLY place that emails the customer — a detailed payment
-// confirmation, showing camp participants and trip guests separately.
+// This is the ONLY place that emails the customer.
 //
 // Additional env var needed beyond create-booking.js:
 //   STRIPE_WEBHOOK_SECRET
@@ -20,10 +21,10 @@ const COL = {
     club: 6, allergies: 7, clothingQty: 8, clothingSize: 9, bottleQty: 10,
     meals: 11, parentName: 12, email: 13, phone: 14, bookingTotal: 15,
     status: 16, language: 17, role: 18,
-    venue: 19, campDateRange: 20, ageRange: 21, dropOffTime: 22, pickUpTime: 23,
-    bookingReference: 24, startDate: 25, endDate: 26,
+    venue: 19, campDateRange: 20, ageRange: 21,
+    bookingReference: 22, startDate: 23, endDate: 24,
 }
-const LAST_COLUMN = "AA"
+const LAST_COLUMN = "Y"
 const STATUS_COLUMN_LETTER = "Q"
 
 async function getSheet() {
@@ -67,14 +68,14 @@ async function findBookingRows(sheets, bookingId) {
     return matches
 }
 
-function buildConfirmationHtml(matches) {
+// ★ dropOffTime/pickUpTime now come from Stripe's session metadata, passed
+// in as arguments — not read from the Sheet row.
+function buildConfirmationHtml(matches, dropOffTime, pickUpTime) {
     const first = matches[0].data
     const camp = first[COL.camp]
     const venue = first[COL.venue]
     const dateRange = first[COL.campDateRange]
     const ageRange = first[COL.ageRange]
-    const dropOffTime = first[COL.dropOffTime]
-    const pickUpTime = first[COL.pickUpTime]
     const reference = first[COL.bookingReference]
     const total = first[COL.bookingTotal]
 
@@ -116,8 +117,8 @@ function buildConfirmationHtml(matches) {
             <tr><td><strong>Dates</strong></td><td>${dateRange}</td></tr>
             <tr><td><strong>Venue</strong></td><td>${venue}</td></tr>
             <tr><td><strong>Ages</strong></td><td>${ageRange}</td></tr>
-            <tr><td><strong>Drop-off</strong></td><td>${dropOffTime}</td></tr>
-            <tr><td><strong>Pick-up</strong></td><td>${pickUpTime}</td></tr>
+            <tr><td><strong>Drop-off</strong></td><td>${dropOffTime || ""}</td></tr>
+            <tr><td><strong>Pick-up</strong></td><td>${pickUpTime || ""}</td></tr>
             <tr><td><strong>Tickets</strong></td><td>${participants.length} ${participants.length === 1 ? "child" : "children"}</td></tr>
             <tr><td><strong>Total paid</strong></td><td>€${total}</td></tr>
         </table>
@@ -147,6 +148,8 @@ exports.handler = async (event) => {
     if (stripeEvent.type === "checkout.session.completed") {
         const session = stripeEvent.data.object
         const bookingId = session.metadata.bookingId
+        const dropOffTime = session.metadata.dropOffTime
+        const pickUpTime = session.metadata.pickUpTime
         const buyerEmail = session.customer_details?.email
 
         try {
@@ -165,7 +168,11 @@ exports.handler = async (event) => {
             )
 
             if (buyerEmail && matches.length > 0) {
-                await sendEmail(buyerEmail, "Payment confirmed — see you at camp!", buildConfirmationHtml(matches))
+                await sendEmail(
+                    buyerEmail,
+                    "Payment confirmed — see you at camp!",
+                    buildConfirmationHtml(matches, dropOffTime, pickUpTime)
+                )
             }
         } catch (err) {
             console.error("Failed to update sheet / send email:", err)
