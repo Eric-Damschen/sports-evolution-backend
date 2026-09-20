@@ -116,6 +116,9 @@ exports.handler = async (event) => {
             ageRange: first[COL.ageRange],
             dropOffTime: (session.metadata && session.metadata.dropOffTime) || "",
             pickUpTime: (session.metadata && session.metadata.pickUpTime) || "",
+            // Used to build the "add to calendar" links.
+            campStartISO: (session.metadata && session.metadata.campStartISO) || "",
+            campEndISO: (session.metadata && session.metadata.campEndISO) || "",
             total:
                 typeof session.amount_total === "number"
                     ? session.amount_total / 100
