@@ -1,10 +1,8 @@
 // /api/camp-availability.js
 // Called by BOTH BookingForm.tsx and TripBookingForm.tsx on page load.
-// GET /api/camp-availability?camp=Rodange%20(football)&capacity=48
-// TripBookingForm additionally passes &tripCapacity=20.
 //
-// ★ Column layout matches the actual live Sheet: Role sits at column S
-// (index 18), right after Language — not at the end.
+// ★ Column layout matches the live Sheet. No drop-off/pick-up columns —
+// see create-booking.js for why (Stripe metadata instead).
 
 const { google } = require("googleapis")
 
@@ -13,10 +11,10 @@ const COL = {
     club: 6, allergies: 7, clothingQty: 8, clothingSize: 9, bottleQty: 10,
     meals: 11, parentName: 12, email: 13, phone: 14, bookingTotal: 15,
     status: 16, language: 17, role: 18,
-    venue: 19, campDateRange: 20, ageRange: 21, dropOffTime: 22, pickUpTime: 23,
-    bookingReference: 24, startDate: 25, endDate: 26,
+    venue: 19, campDateRange: 20, ageRange: 21,
+    bookingReference: 22, startDate: 23, endDate: 24,
 }
-const LAST_COLUMN = "AA"
+const LAST_COLUMN = "Y"
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
