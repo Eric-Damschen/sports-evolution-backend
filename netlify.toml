@@ -21,3 +21,8 @@
   from = "/api/stripe-webhook"
   to = "/.netlify/functions/stripe-webhook"
   status = 200
+
+[[redirects]]
+  from = "/api/get-booking-confirmation"
+  to = "/.netlify/functions/get-booking-confirmation"
+  status = 200
