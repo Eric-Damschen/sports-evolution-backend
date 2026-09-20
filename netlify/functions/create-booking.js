@@ -365,6 +365,10 @@ exports.handler = async (event) => {
         try {
             session = await stripe.checkout.sessions.create({
                 mode: "payment",
+                // Cards only. Setting this explicitly overrides whatever is
+                // switched on in the Stripe Dashboard, so Bancontact, iDEAL,
+                // SEPA and the rest never appear at checkout.
+                payment_method_types: ["card"],
                 customer_email: contact.email,
                 client_reference_id: bookingReference,
                 expires_at: expiresAt,
