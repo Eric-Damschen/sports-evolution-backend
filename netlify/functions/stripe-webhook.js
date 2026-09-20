@@ -135,7 +135,27 @@ exports.handler = async (event) => {
     }
 
     const sig = event.headers["stripe-signature"]
-    const payload = event.isBase64Encoded ? Buffer.from(event.body, "base64") : event.body
+
+    // ★ Netlify's Lambda-compatible runtime doesn't always hand back
+    // event.body byte-for-byte identical to what Stripe actually sent —
+    // some deployments expose the true raw body separately as
+    // event.rawBody. Signature verification needs the EXACT original
+    // bytes; a single character of difference fails it every time,
+    // regardless of a correct secret. Prefer rawBody when present.
+    let payload
+    if (event.rawBody) {
+        payload = event.rawBody
+    } else if (event.isBase64Encoded) {
+        payload = Buffer.from(event.body, "base64")
+    } else {
+        payload = event.body
+    }
+
+    console.log(
+        `Webhook body debug — has rawBody: ${!!event.rawBody}, isBase64Encoded: ${event.isBase64Encoded}, ` +
+        `body type: ${typeof event.body}, body length: ${event.body ? event.body.length : 0}, ` +
+        `signature header present: ${!!sig}`
+    )
 
     let stripeEvent
     try {
