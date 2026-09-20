@@ -1,200 +1,282 @@
-// /api/create-booking.js
-// Shared by BOTH BookingForm.tsx and TripBookingForm.tsx.
-//
-// ★ Column layout matches the live Sheet: A–S is the original columns with
-// Role at S, T–Y are confirmation-page fields. Drop-off/pick-up time are
-// NOT stored here — they're the same for every booking of a given camp, so
-// they're attached to the Stripe session's metadata instead, and read back
-// from there by stripe-webhook.js and get-booking-confirmation.js. Nothing
-// per-booking is lost; it's just not duplicated into every row.
-//
-// 1. Re-checks capacity — camp spots against "totalSpots", trip spots
-//    against "tripTotalSpots" (only if trip guests were sent)
-// 2. Generates a short, human-friendly booking reference (e.g. SE-2026-A3F2)
-// 3. Writes one row per PARTICIPANT (child) and one row per trip GUEST,
-//    all sharing the same Booking ID — the "Role" column tells them apart
-// 4. Creates a Stripe Checkout Session for the submitted total
-//
-// No email is sent from here — only stripe-webhook.js emails the customer.
+'use strict';
 
-const { google } = require("googleapis")
-const Stripe = require("stripe")
-const { randomUUID } = require("crypto")
+/**
+ * /api/create-booking
+ * Shared by BOTH BookingForm.tsx and TripBookingForm.tsx.
+ *
+ * Payload contract is UNCHANGED from the previous version — the Framer
+ * components do not need editing:
+ *   { camp, campTitle, location, dateRange, startDate, endDate, ageRange,
+ *     dropOffTime, pickUpTime, children[], tripGuests[], contact,
+ *     total, totalSpots, tripTotalSpots, language }
+ *   children[]: { firstName, lastName, dob, club, allergies,
+ *                 addOns: { clothingQty, clothingSize, bottleQty, meals } }
+ *
+ * 1. Checks capacity — camp against totalSpots, trip against tripTotalSpots
+ * 2. Generates a collision-checked booking reference
+ * 3. Writes one row per participant and one per trip guest, all sharing a Booking ID
+ * 4. Creates a Stripe Checkout Session for the submitted total
+ *
+ * No email is sent here — only stripe-webhook.js emails the customer.
+ */
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+const Stripe = require('stripe');
+const { randomUUID } = require('crypto');
+const {
+  COL,
+  ROLE_PARTICIPANT,
+  ROLE_JOINER,
+  getSheet,
+  getAllRows,
+  appendRows,
+  parseAppendedRowNumbers,
+  setStatus,
+  countBookedSpots,
+  allocatePersonAmounts,
+  makeBookingReference,
+  reply,
+  corsHeaders,
+  toNumber,
+  PENDING_HOLD_MINUTES,
+} = require('../lib/common');
 
-// ★ Bookings tab column layout — shared with camp-availability.js,
-// stripe-webhook.js, and get-booking-confirmation.js — keep all four in
-// sync if you ever add/reorder a column.
-const COL = {
-    bookingId: 0, createdAt: 1, camp: 2, firstName: 3, lastName: 4, dob: 5,
-    club: 6, allergies: 7, clothingQty: 8, clothingSize: 9, bottleQty: 10,
-    meals: 11, parentName: 12, email: 13, phone: 14, bookingTotal: 15,
-    status: 16, language: 17, role: 18,
-    venue: 19, campDateRange: 20, ageRange: 21,
-    bookingReference: 22, startDate: 23, endDate: 24,
-}
-const LAST_COLUMN = "Y"
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-const CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-}
-
-async function getSheet() {
-    const auth = new google.auth.JWT(
-        process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        null,
-        process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.replace(/\\n/g, "\n"),
-        ["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    return google.sheets({ version: "v4", auth })
-}
-
-async function countBookedSpots(sheets, camp, role) {
-    const result = await sheets.spreadsheets.values.get({
-        spreadsheetId: process.env.GOOGLE_SHEET_ID,
-        range: `Bookings!A:${LAST_COLUMN}`,
-    })
-    const rows = result.data.values || []
-    let count = 0
-    for (const row of rows) {
-        const rowCamp = row[COL.camp]
-        const status = row[COL.status]
-        const rowRole = row[COL.role] || "Participant"
-        if (rowCamp === camp && (status === "pending" || status === "paid") && rowRole === role) {
-            count += 1
-        }
-    }
-    return count
-}
-
-function makeBookingReference(bookingId) {
-    const year = new Date().getFullYear()
-    const short = bookingId.replace(/-/g, "").slice(0, 4).toUpperCase()
-    return `SE-${year}-${short}`
-}
+const METHODS = 'POST, OPTIONS';
+const MAX_TOTAL_EUR = toNumber(process.env.MAX_BOOKING_TOTAL_EUR, 5000);
+const CONFIRMATION_PATH = process.env.CONFIRMATION_PATH || '/confirmation-page';
 
 exports.handler = async (event) => {
-    if (event.httpMethod === "OPTIONS") {
-        return { statusCode: 200, headers: CORS_HEADERS, body: "" }
-    }
-    if (event.httpMethod !== "POST") {
-        return { statusCode: 405, headers: CORS_HEADERS, body: JSON.stringify({ error: "Method not allowed" }) }
+  if (event.httpMethod === 'OPTIONS') {
+    return { statusCode: 200, headers: corsHeaders(METHODS), body: '' };
+  }
+  if (event.httpMethod !== 'POST') {
+    return reply(405, { error: 'Method not allowed' }, METHODS);
+  }
+
+  try {
+    const {
+      camp, location, dateRange, startDate, endDate, ageRange,
+      dropOffTime, pickUpTime, children, tripGuests, contact, total, addOnsIncluded,
+      totalSpots, tripTotalSpots, language,
+    } = JSON.parse(event.body || '{}');
+
+    if (!camp || !Array.isArray(children) || children.length === 0 || !contact) {
+      return reply(400, { error: 'Missing camp, children, or contact details' }, METHODS);
     }
 
+    if (!contact.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(contact.email))) {
+      return reply(400, { error: 'A valid contact email is required' }, METHODS);
+    }
+
+    // Pricing is trusted from the form by design. Bounds only — no price list.
+    const amount = toNumber(total, NaN);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > MAX_TOTAL_EUR) {
+      return reply(400, { error: 'Invalid booking total' }, METHODS);
+    }
+
+    const guests = Array.isArray(tripGuests) ? tripGuests : [];
+    const bookingId = randomUUID();
+    const sheets = await getSheet();
+
+    // One read serves capacity checks AND reference uniqueness.
+    const allRows = await getAllRows(sheets);
+
+    /* --- 1. Early capacity check ------------------------------------- */
+    // Fast, friendly rejection when the camp is clearly full. This is NOT the
+    // real guard — two requests can pass it at the same moment. Step 3 is.
+
+    if (totalSpots) {
+      const booked = countBookedSpots(allRows, camp, ROLE_PARTICIPANT);
+      const remaining = Number(totalSpots) - booked;
+      if (children.length > remaining) {
+        return reply(409, { error: 'notEnoughSpots', remaining: Math.max(0, remaining) }, METHODS);
+      }
+    }
+
+    if (tripTotalSpots && guests.length > 0) {
+      const booked = countBookedSpots(allRows, camp, ROLE_JOINER);
+      const remaining = Number(tripTotalSpots) - booked;
+      if (guests.length > remaining) {
+        return reply(409, { error: 'notEnoughTripSpots', remaining: Math.max(0, remaining) }, METHODS);
+      }
+    }
+
+    /* --- 2. Rows ----------------------------------------------------- */
+
+    const bookingReference = makeBookingReference(allRows);
+    const createdAt = new Date().toISOString();
+
+    // The form sends addOnsIncluded: false once the add-ons deadline has passed,
+    // and then leaves them out of the total. Recording them anyway would put
+    // items on the packing list that nobody paid for, so they are zeroed here.
+    const addOnsCount = addOnsIncluded !== false;
+
+    // Column P holds THIS PERSON'S price — the camp fee plus that child's own
+    // add-ons, or the trip ticket price for a guest — not the order total.
+    // The amounts are reconciled to sum to exactly what Stripe charges, so
+    // column P can be summed directly for revenue.
+    const personAmounts = allocatePersonAmounts([...children, ...guests], amount);
+    const childAmounts = personAmounts.slice(0, children.length);
+    const guestAmounts = personAmounts.slice(children.length);
+
+    const participantRows = children.map((child, i) => [
+      bookingId, createdAt, camp,
+      child.firstName || '', child.lastName || '', child.dob || '',
+      child.club || '', child.allergies || '',
+      (addOnsCount && child.addOns && child.addOns.clothingQty) || 0,
+      (addOnsCount && child.addOns && child.addOns.clothingSize) || '',
+      (addOnsCount && child.addOns && child.addOns.bottleQty) || 0,
+      addOnsCount && child.addOns && child.addOns.meals ? 'Yes' : 'No',
+      contact.parentName || '', contact.email || '', contact.phone || '',
+      childAmounts[i], 'pending', language || 'en',
+      ROLE_PARTICIPANT,
+      location || '', dateRange || '', ageRange || '',
+      bookingReference, startDate || '', endDate || '',
+    ]);
+
+    const joinerRows = guests.map((guest, i) => [
+      bookingId, createdAt, camp,
+      guest.firstName || '', guest.lastName || '', '',
+      '', '',
+      0, '', 0, 'No',
+      contact.parentName || '', contact.email || '', contact.phone || '',
+      guestAmounts[i], 'pending', language || 'en',
+      ROLE_JOINER,
+      location || '', dateRange || '', ageRange || '',
+      bookingReference, startDate || '', endDate || '',
+    ]);
+
+    /* --- 3. Claim the seats, then verify we actually won -------------- */
+    //
+    // Google Sheets has no locks, so "check then write" can let two buyers
+    // take the same last spot. Instead: write first, then re-read and see
+    // whether anyone else's rows landed ABOVE ours.
+    //
+    // Append is atomic and assigns row numbers in order, so of two racing
+    // requests exactly one lands first. The later one sees the earlier one's
+    // rows above its own, releases its rows and returns a clean 409. No
+    // Stripe session is ever created for the loser.
+
+    const updatedRange = await appendRows(sheets, [...participantRows, ...joinerRows]);
+    const ourRowNumbers = parseAppendedRowNumbers(updatedRange);
+    const ourRows = ourRowNumbers.map((rowNumber) => ({ rowNumber }));
+    const firstRow = ourRowNumbers.length ? ourRowNumbers[0] : null;
+
+    async function releaseSeats() {
+      try {
+        if (ourRows.length) await setStatus(sheets, ourRows, 'released');
+      } catch (releaseErr) {
+        console.error('[create-booking] could not release rows', releaseErr);
+      }
+    }
+
+    if (firstRow !== null) {
+      const afterRows = await getAllRows(sheets);
+
+      if (totalSpots) {
+        const takenBefore = countBookedSpots(afterRows, camp, ROLE_PARTICIPANT, firstRow);
+        const remaining = Number(totalSpots) - takenBefore;
+        if (children.length > remaining) {
+          await releaseSeats();
+          console.log(
+            `[create-booking] lost the camp race for "${camp}" — ` +
+            `${takenBefore} seat(s) claimed above row ${firstRow}, released ${ourRows.length} row(s)`
+          );
+          return reply(
+            409,
+            { error: 'notEnoughSpots', remaining: Math.max(0, remaining) },
+            METHODS
+          );
+        }
+      }
+
+      if (tripTotalSpots && guests.length > 0) {
+        const takenBefore = countBookedSpots(afterRows, camp, ROLE_JOINER, firstRow);
+        const remaining = Number(tripTotalSpots) - takenBefore;
+        if (guests.length > remaining) {
+          await releaseSeats();
+          console.log(
+            `[create-booking] lost the trip race for "${camp}" — released ${ourRows.length} row(s)`
+          );
+          return reply(
+            409,
+            { error: 'notEnoughTripSpots', remaining: Math.max(0, remaining) },
+            METHODS
+          );
+        }
+      }
+    } else {
+      console.error(
+        '[create-booking] could not read back the appended range — ' +
+        `capacity was verified only before the write. Range was: "${updatedRange}"`
+      );
+    }
+
+    /* --- 4. Stripe Checkout ------------------------------------------ */
+
+    const siteUrl = (process.env.SITE_URL || 'https://www.sportsevolution.lu').replace(/\/$/, '');
+
+    // The seat is held for PENDING_HOLD_MINUTES. Expiring the Stripe session on
+    // the same clock keeps the two in step: when it expires, Stripe fires
+    // checkout.session.expired and the webhook frees the seat immediately.
+    // Stripe's own minimum is 30 minutes, so shorter holds skip this.
+    const expiresAt =
+      PENDING_HOLD_MINUTES >= 30
+        ? Math.floor(Date.now() / 1000) + PENDING_HOLD_MINUTES * 60
+        : undefined;
+
+    let session;
     try {
-        const {
-            camp, campTitle, location, dateRange, startDate, endDate, ageRange,
-            dropOffTime, pickUpTime, children, tripGuests, contact, total,
-            totalSpots, tripTotalSpots, language,
-        } = JSON.parse(event.body)
-
-        if (!camp || !Array.isArray(children) || children.length === 0 || !contact) {
-            return {
-                statusCode: 400,
-                headers: CORS_HEADERS,
-                body: JSON.stringify({ error: "Missing camp, children, or contact details" }),
-            }
-        }
-
-        const guests = Array.isArray(tripGuests) ? tripGuests : []
-        const bookingId = randomUUID()
-        const bookingReference = makeBookingReference(bookingId)
-        const sheets = await getSheet()
-
-        // --- 1. Capacity checks — camp spots, and trip spots if requested ----------
-        if (totalSpots) {
-            const bookedParticipants = await countBookedSpots(sheets, camp, "Participant")
-            const remaining = Number(totalSpots) - bookedParticipants
-            if (children.length > remaining) {
-                return {
-                    statusCode: 409,
-                    headers: CORS_HEADERS,
-                    body: JSON.stringify({ error: "notEnoughSpots", remaining: Math.max(0, remaining) }),
-                }
-            }
-        }
-        if (tripTotalSpots && guests.length > 0) {
-            const bookedJoiners = await countBookedSpots(sheets, camp, "Joiner")
-            const tripRemaining = Number(tripTotalSpots) - bookedJoiners
-            if (guests.length > tripRemaining) {
-                return {
-                    statusCode: 409,
-                    headers: CORS_HEADERS,
-                    body: JSON.stringify({ error: "notEnoughTripSpots", remaining: Math.max(0, tripRemaining) }),
-                }
-            }
-        }
-
-        // --- 2. Write one row per PARTICIPANT and one row per trip GUEST ----------
-        // ★ Column order here MUST exactly match COL above: A..S then T..Y.
-        // No drop-off/pick-up time — see the note at the top of this file.
-        const createdAt = new Date().toISOString()
-
-        const participantRows = children.map((child) => [
-            bookingId, createdAt, camp,
-            child.firstName, child.lastName, child.dob,
-            child.club || "", child.allergies || "",
-            child.addOns?.clothingQty || 0, child.addOns?.clothingSize || "",
-            child.addOns?.bottleQty || 0, child.addOns?.meals ? "Yes" : "No",
-            contact.parentName, contact.email, contact.phone,
-            total, "pending", language || "en",
-            "Participant",
-            location || "", dateRange || "", ageRange || "",
-            bookingReference, startDate || "", endDate || "",
-        ])
-
-        const joinerRows = guests.map((guest) => [
-            bookingId, createdAt, camp,
-            guest.firstName, guest.lastName, "",
-            "", "",
-            0, "", 0, "No",
-            contact.parentName, contact.email, contact.phone,
-            total, "pending", language || "en",
-            "Joiner",
-            location || "", dateRange || "", ageRange || "",
-            bookingReference, startDate || "", endDate || "",
-        ])
-
-        await sheets.spreadsheets.values.append({
-            spreadsheetId: process.env.GOOGLE_SHEET_ID,
-            range: `Bookings!A:${LAST_COLUMN}`,
-            valueInputOption: "USER_ENTERED",
-            requestBody: { values: [...participantRows, ...joinerRows] },
-        })
-
-        // --- 3. Create the Stripe Checkout session, for the submitted total -------
-        // ★ Drop-off/pick-up time travel via Stripe's own metadata instead of
-        // the Sheet — stripe-webhook.js and get-booking-confirmation.js both
-        // read them back from here.
-        const session = await stripe.checkout.sessions.create({
-            mode: "payment",
-            payment_method_types: ["card"],
-            customer_email: contact.email,
-            line_items: [
-                {
-                    price_data: {
-                        currency: "eur",
-                        product_data: { name: `${camp} camp booking` },
-                        unit_amount: Math.round(total * 100),
-                    },
-                    quantity: 1,
-                },
-            ],
-            metadata: {
-                bookingId,
-                dropOffTime: dropOffTime || "",
-                pickUpTime: pickUpTime || "",
-            },
-            success_url: "https://www.sportsevolution.lu/confirmation-page?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url: `${process.env.SITE_URL}`,
-        })
-
-        return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ checkoutUrl: session.url }) }
-    } catch (err) {
-        console.error(err)
-        return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: "Could not create booking" }) }
+      session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      // payment_method_types intentionally omitted: the Stripe Dashboard then
+      // decides which methods to offer (Bancontact, iDEAL, Apple Pay, cards).
+      customer_email: contact.email,
+      client_reference_id: bookingReference,
+      expires_at: expiresAt,
+      line_items: [
+        {
+          price_data: {
+            currency: 'eur',
+            product_data: { name: `${camp} — ${bookingReference}` },
+            unit_amount: Math.round(amount * 100),
+          },
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        bookingId,
+        bookingReference,
+        dropOffTime: dropOffTime || '',
+        pickUpTime: pickUpTime || '',
+      },
+      // Refunds arrive as charge events, not session events. Copying the
+      // metadata onto the PaymentIntent means the charge carries bookingId
+      // too, so a refund can find its rows without a lookup.
+      payment_intent_data: {
+        metadata: { bookingId, bookingReference },
+      },
+      success_url: `${siteUrl}${CONFIRMATION_PATH}?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: siteUrl,
+      locale: 'auto',
+      });
+    } catch (stripeErr) {
+      // The seats are already claimed in the Sheet. If Stripe refuses, hand
+      // them straight back rather than leaving a 30-minute ghost hold.
+      await releaseSeats();
+      throw stripeErr;
     }
-}
+
+    console.log(
+      `[create-booking] ${bookingReference} — camp "${camp}", ` +
+      `${participantRows.length} participant(s), ${joinerRows.length} joiner(s), ` +
+      `€${amount} total, held ${PENDING_HOLD_MINUTES} min, session ${session.id}`
+    );
+
+    return reply(200, { checkoutUrl: session.url, bookingReference }, METHODS);
+  } catch (err) {
+    console.error('[create-booking] failed:', err);
+    return reply(500, { error: 'Could not create booking' }, METHODS);
+  }
+};
