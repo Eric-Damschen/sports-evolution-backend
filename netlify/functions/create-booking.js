@@ -195,6 +195,7 @@ exports.handler = async (event) => {
             camp, campTitle, location, dateRange, startDate, endDate, ageRange,
             dropOffTime, pickUpTime, children, tripGuests, contact, total,
             addOnsIncluded, totalSpots, tripTotalSpots, language,
+            campStartISO, campEndISO,
         } = JSON.parse(event.body || "{}")
 
         if (!camp || !Array.isArray(children) || children.length === 0 || !contact) {
@@ -353,6 +354,11 @@ exports.handler = async (event) => {
             bookingReference,
             dropOffTime: dropOffTime || "",
             pickUpTime: pickUpTime || "",
+            // ISO dates (YYYY-MM-DD) ride along so the confirmation email and
+            // page can build "add to calendar" links without re-parsing a
+            // human date like "20 October 2026".
+            campStartISO: campStartISO || "",
+            campEndISO: campEndISO || "",
         }
 
         let session
