@@ -218,13 +218,15 @@ exports.handler = async (event) => {
     const siteUrl = (process.env.SITE_URL || 'https://www.sportsevolution.lu').replace(/\/$/, '');
 
     // The seat is held for PENDING_HOLD_MINUTES. Expiring the Stripe session on
-    // the same clock keeps the two in step: when it expires, Stripe fires
-    // checkout.session.expired and the webhook frees the seat immediately.
-    // Stripe's own minimum is 30 minutes, so shorter holds skip this.
-    const expiresAt =
-      PENDING_HOLD_MINUTES >= 30
-        ? Math.floor(Date.now() / 1000) + PENDING_HOLD_MINUTES * 60
-        : undefined;
+    // roughly the same clock keeps the two in step: when it expires, Stripe
+    // fires checkout.session.expired and the webhook frees the seat at once.
+    //
+    // Stripe requires expires_at to be AT LEAST 30 minutes in the future, and
+    // it is checked when Stripe receives the request — so asking for exactly
+    // 30 minutes fails by the few seconds the round trip takes. The 2-minute
+    // margin below clears that. The Sheet's hold stays the real authority.
+    const holdMinutes = Math.max(PENDING_HOLD_MINUTES, 30) + 2;
+    const expiresAt = Math.floor(Date.now() / 1000) + holdMinutes * 60;
 
     let session;
     try {
@@ -277,6 +279,13 @@ exports.handler = async (event) => {
     return reply(200, { checkoutUrl: session.url, bookingReference }, METHODS);
   } catch (err) {
     console.error('[create-booking] failed:', err);
-    return reply(500, { error: 'Could not create booking' }, METHODS);
+    // The real reason is returned so it shows up in the browser console and in
+    // the Netlify function log. The customer still only sees the friendly
+    // message the form renders.
+    return reply(
+      500,
+      { error: 'Could not create booking', message: err && err.message },
+      METHODS
+    );
   }
 };
