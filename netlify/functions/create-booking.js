@@ -1,11 +1,12 @@
 // /api/create-booking.js
 // Shared by BOTH BookingForm.tsx and TripBookingForm.tsx.
 //
-// ★ Column layout matches the ACTUAL live Sheet exactly: A–S is the
-// original columns with Role at S (right after Language), and T–AA are the
-// confirmation-page fields appended afterward. This was deliberately kept
-// in this order — not the order originally planned — to match columns
-// already in use rather than move anything around.
+// ★ Column layout matches the live Sheet: A–S is the original columns with
+// Role at S, T–Y are confirmation-page fields. Drop-off/pick-up time are
+// NOT stored here — they're the same for every booking of a given camp, so
+// they're attached to the Stripe session's metadata instead, and read back
+// from there by stripe-webhook.js and get-booking-confirmation.js. Nothing
+// per-booking is lost; it's just not duplicated into every row.
 //
 // 1. Re-checks capacity — camp spots against "totalSpots", trip spots
 //    against "tripTotalSpots" (only if trip guests were sent)
@@ -30,10 +31,10 @@ const COL = {
     club: 6, allergies: 7, clothingQty: 8, clothingSize: 9, bottleQty: 10,
     meals: 11, parentName: 12, email: 13, phone: 14, bookingTotal: 15,
     status: 16, language: 17, role: 18,
-    venue: 19, campDateRange: 20, ageRange: 21, dropOffTime: 22, pickUpTime: 23,
-    bookingReference: 24, startDate: 25, endDate: 26,
+    venue: 19, campDateRange: 20, ageRange: 21,
+    bookingReference: 22, startDate: 23, endDate: 24,
 }
-const LAST_COLUMN = "AA"
+const LAST_COLUMN = "Y"
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -51,8 +52,6 @@ async function getSheet() {
     return google.sheets({ version: "v4", auth })
 }
 
-// ★ Counts booked spots for a camp, filtered by role. A blank role (rows
-// written before this feature existed) is treated as "Participant".
 async function countBookedSpots(sheets, camp, role) {
     const result = await sheets.spreadsheets.values.get({
         spreadsheetId: process.env.GOOGLE_SHEET_ID,
@@ -130,34 +129,33 @@ exports.handler = async (event) => {
         }
 
         // --- 2. Write one row per PARTICIPANT and one row per trip GUEST ----------
-        // ★ Column order here MUST exactly match COL above: A..S then T..AA.
+        // ★ Column order here MUST exactly match COL above: A..S then T..Y.
+        // No drop-off/pick-up time — see the note at the top of this file.
         const createdAt = new Date().toISOString()
 
         const participantRows = children.map((child) => [
-            bookingId, createdAt, camp,                                  // A B C
-            child.firstName, child.lastName, child.dob,                  // D E F
-            child.club || "", child.allergies || "",                     // G H
-            child.addOns?.clothingQty || 0, child.addOns?.clothingSize || "", // I J
-            child.addOns?.bottleQty || 0, child.addOns?.meals ? "Yes" : "No", // K L
-            contact.parentName, contact.email, contact.phone,            // M N O
-            total, "pending", language || "en",                          // P Q R
-            "Participant",                                                // S (role)
-            location || "", dateRange || "", ageRange || "",              // T U V
-            dropOffTime || "", pickUpTime || "", bookingReference,        // W X Y
-            startDate || "", endDate || "",                                // Z AA
+            bookingId, createdAt, camp,
+            child.firstName, child.lastName, child.dob,
+            child.club || "", child.allergies || "",
+            child.addOns?.clothingQty || 0, child.addOns?.clothingSize || "",
+            child.addOns?.bottleQty || 0, child.addOns?.meals ? "Yes" : "No",
+            contact.parentName, contact.email, contact.phone,
+            total, "pending", language || "en",
+            "Participant",
+            location || "", dateRange || "", ageRange || "",
+            bookingReference, startDate || "", endDate || "",
         ])
 
         const joinerRows = guests.map((guest) => [
             bookingId, createdAt, camp,
-            guest.firstName, guest.lastName, "",      // no date of birth for a joiner
-            "", "",                                    // no club, no allergies
-            0, "", 0, "No",                              // no camp add-ons for a joiner
+            guest.firstName, guest.lastName, "",
+            "", "",
+            0, "", 0, "No",
             contact.parentName, contact.email, contact.phone,
             total, "pending", language || "en",
             "Joiner",
             location || "", dateRange || "", ageRange || "",
-            dropOffTime || "", pickUpTime || "", bookingReference,
-            startDate || "", endDate || "",
+            bookingReference, startDate || "", endDate || "",
         ])
 
         await sheets.spreadsheets.values.append({
@@ -168,6 +166,9 @@ exports.handler = async (event) => {
         })
 
         // --- 3. Create the Stripe Checkout session, for the submitted total -------
+        // ★ Drop-off/pick-up time travel via Stripe's own metadata instead of
+        // the Sheet — stripe-webhook.js and get-booking-confirmation.js both
+        // read them back from here.
         const session = await stripe.checkout.sessions.create({
             mode: "payment",
             payment_method_types: ["card"],
@@ -182,7 +183,11 @@ exports.handler = async (event) => {
                     quantity: 1,
                 },
             ],
-            metadata: { bookingId },
+            metadata: {
+                bookingId,
+                dropOffTime: dropOffTime || "",
+                pickUpTime: pickUpTime || "",
+            },
             success_url: "https://www.sportsevolution.lu/confirmation-page?session_id={CHECKOUT_SESSION_ID}",
             cancel_url: `${process.env.SITE_URL}`,
         })
