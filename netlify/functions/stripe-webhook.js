@@ -218,10 +218,20 @@ async function handlePaid(session) {
     const amountPaid =
         typeof session.amount_total === "number" ? session.amount_total / 100 : NaN
 
+    const calendarEvent = buildCalendarEvent(matches, metadata, t)
+
     await sendEmail(
         buyerEmail,
         t.subject(matches[0].data[COL.bookingReference] || ""),
-        buildConfirmationHtml(matches, metadata.dropOffTime, metadata.pickUpTime, t, amountPaid)
+        buildConfirmationHtml(
+            matches,
+            metadata.dropOffTime,
+            metadata.pickUpTime,
+            t,
+            amountPaid,
+            calendarEvent
+        ),
+        calendarEvent
     )
 
     console.log(`[webhook] ${bookingId}: confirmation sent to ${buyerEmail} (${lang})`)
@@ -306,6 +316,152 @@ async function resolveBookingId(charge) {
     }
 }
 
+/* ---------------- Calendar ---------------- */
+
+// "2026-10-20" or "20 October 2026" -> "20261020"
+function toCalendarDate(value) {
+    if (!value) return ""
+    const s = String(value).trim()
+
+    const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+    if (iso) return `${iso[1]}${iso[2]}${iso[3]}`
+
+    const d = new Date(s)
+    if (!isNaN(d.getTime())) {
+        return (
+            String(d.getFullYear()) +
+            String(d.getMonth() + 1).padStart(2, "0") +
+            String(d.getDate()).padStart(2, "0")
+        )
+    }
+    return ""
+}
+
+// All-day events end on the day AFTER the last day.
+function nextDay(yyyymmdd) {
+    if (!/^\d{8}$/.test(yyyymmdd)) return ""
+    const y = Number(yyyymmdd.slice(0, 4))
+    const m = Number(yyyymmdd.slice(4, 6))
+    const d = Number(yyyymmdd.slice(6, 8))
+    const dt = new Date(Date.UTC(y, m - 1, d + 1))
+    return (
+        String(dt.getUTCFullYear()) +
+        String(dt.getUTCMonth() + 1).padStart(2, "0") +
+        String(dt.getUTCDate()).padStart(2, "0")
+    )
+}
+
+// "Rodange (football) · October 2026" -> "Rodange"
+function venueFromCamp(camp) {
+    const m = String(camp || "").match(/^(.*?)\s\(/)
+    return m ? m[1].trim() : String(camp || "")
+}
+
+// "Rodange (football) · October 2026" -> "Football"
+function sportFromCamp(camp) {
+    const m = String(camp || "").match(/\(([^)]*)\)/)
+    if (!m) return ""
+    const sport = m[1].trim()
+    return sport ? sport.charAt(0).toUpperCase() + sport.slice(1) : ""
+}
+
+// RFC 5545 wants lines folded at 75 octets. Most clients cope without it,
+// stricter ones do not.
+function icsFold(line) {
+    if (line.length <= 73) return line
+    const parts = []
+    let rest = line
+    parts.push(rest.slice(0, 73))
+    rest = rest.slice(73)
+    while (rest.length > 72) {
+        parts.push(" " + rest.slice(0, 72))
+        rest = rest.slice(72)
+    }
+    if (rest.length) parts.push(" " + rest)
+    return parts.join("\r\n")
+}
+
+function buildCalendarEvent(matches, metadata, t) {
+    const first = matches[0].data
+
+    const start = toCalendarDate(metadata.campStartISO || first[COL.startDate])
+    if (!start) return null
+
+    const lastDay =
+        toCalendarDate(metadata.campEndISO || first[COL.endDate]) || start
+    const end = nextDay(lastDay)
+    const location = first[COL.venue] || venueFromCamp(first[COL.camp])
+
+    const details = [
+        `${t.reference}: ${first[COL.bookingReference] || ""}`,
+        metadata.dropOffTime ? `${t.dropOff}: ${metadata.dropOffTime}` : "",
+        metadata.pickUpTime
+            ? `${t.pickUp}: ${t.until} ${metadata.pickUpTime}`
+            : "",
+    ]
+        .filter(Boolean)
+        .join("\n")
+
+    return {
+        start,
+        end,
+        title: [sportFromCamp(first[COL.camp]) || first[COL.camp], location]
+            .filter(Boolean)
+            .join(" — "),
+        details,
+        location,
+        reference: first[COL.bookingReference] || "",
+    }
+}
+
+function googleCalendarUrl(ev) {
+    const params = new URLSearchParams({
+        action: "TEMPLATE",
+        text: ev.title,
+        dates: `${ev.start}/${ev.end}`,
+        details: ev.details,
+        location: ev.location,
+    })
+    return `https://calendar.google.com/calendar/render?${params.toString()}`
+}
+
+function icsEscape(s) {
+    return String(s || "")
+        .replace(/\\/g, "\\\\")
+        .replace(/;/g, "\\;")
+        .replace(/,/g, "\\,")
+        .replace(/\n/g, "\\n")
+}
+
+// Apple Mail, Outlook and Gmail all offer "add to calendar" when an .ics is
+// attached, so the invite travels with the email rather than as a link.
+function buildIcs(ev) {
+    const stamp = new Date()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace(/\.\d{3}/, "")
+
+    return [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Sports Evolution//Booking//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VEVENT",
+        `UID:${ev.reference || stamp}@sportsevolution.lu`,
+        `DTSTAMP:${stamp}`,
+        `DTSTART;VALUE=DATE:${ev.start}`,
+        `DTEND;VALUE=DATE:${ev.end}`,
+        `SUMMARY:${icsEscape(ev.title)}`,
+        `LOCATION:${icsEscape(ev.location)}`,
+        `DESCRIPTION:${icsEscape(ev.details)}`,
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+        .map(icsFold)
+        .join("\r\n")
+}
+
 /* ---------------- Email ---------------- */
 
 const T = {
@@ -319,6 +475,11 @@ const T = {
         child: "child", children: "children", noAddOns: "No add-ons",
         clothing: "Clothing set", bottle: "Drinking bottle", meals: "Meals",
         size: "size", outro: "See you at camp!",
+        addToCalendar: "Add this camp to your calendar",
+        googleCalendar: "Add to Google Calendar",
+        appleCalendar: "For Apple Calendar or Outlook, open the attached invite file.",
+        until: "until",
+        signOff: "Kind regards,", team: "Your Sports Evolution Team",
     },
     fr: {
         subject: (ref) => `Paiement confirmé — ${ref}`,
@@ -330,6 +491,11 @@ const T = {
         child: "enfant", children: "enfants", noAddOns: "Aucun supplément",
         clothing: "Tenue", bottle: "Gourde", meals: "Repas",
         size: "taille", outro: "À bientôt au stage !",
+        addToCalendar: "Ajoutez ce stage à votre agenda",
+        googleCalendar: "Ajouter à Google Agenda",
+        appleCalendar: "Pour Calendrier Apple ou Outlook, ouvrez le fichier d'invitation joint.",
+        until: "jusqu'à",
+        signOff: "Cordialement,", team: "Votre équipe Sports Evolution",
     },
     de: {
         subject: (ref) => `Zahlung bestätigt — ${ref}`,
@@ -341,6 +507,11 @@ const T = {
         child: "Kind", children: "Kinder", noAddOns: "Keine Extras",
         clothing: "Kleidungsset", bottle: "Trinkflasche", meals: "Mahlzeiten",
         size: "Größe", outro: "Bis bald im Camp!",
+        addToCalendar: "Termin in Ihren Kalender eintragen",
+        googleCalendar: "Zu Google Kalender hinzufügen",
+        appleCalendar: "Für Apple Kalender oder Outlook öffnen Sie die angehängte Termindatei.",
+        until: "bis",
+        signOff: "Mit freundlichen Grüßen,", team: "Ihr Sports Evolution Team",
     },
     pt: {
         subject: (ref) => `Pagamento confirmado — ${ref}`,
@@ -352,10 +523,15 @@ const T = {
         child: "criança", children: "crianças", noAddOns: "Sem extras",
         clothing: "Conjunto de roupa", bottle: "Garrafa", meals: "Refeições",
         size: "tamanho", outro: "Até breve no campo!",
+        addToCalendar: "Adicione este campo ao seu calendário",
+        googleCalendar: "Adicionar ao Google Calendar",
+        appleCalendar: "Para o Calendário Apple ou Outlook, abra o ficheiro de convite em anexo.",
+        until: "até",
+        signOff: "Com os melhores cumprimentos,", team: "A sua equipa Sports Evolution",
     },
 }
 
-function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid) {
+function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, calendarEvent) {
     const first = matches[0].data
 
     const orderTotal = isFinite(amountPaid)
@@ -398,6 +574,20 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid) 
 
     const countWord = participants.length === 1 ? t.child : t.children
 
+    // ★ Google link inline; Apple/Outlook use the attached .ics.
+    const calendarSection = calendarEvent
+        ? `
+        <p style="margin-top:22px;"><strong>${esc(t.addToCalendar)}</strong></p>
+        <p style="margin:6px 0;">
+            <a href="${esc(googleCalendarUrl(calendarEvent))}"
+               style="display:inline-block;padding:10px 18px;border:1px solid #E6E0D8;border-radius:999px;color:#12110F;text-decoration:none;font-weight:600;">
+                ${esc(t.googleCalendar)}
+            </a>
+        </p>
+        <p style="margin:6px 0;color:#6b7280;font-size:13px;">${esc(t.appleCalendar)}</p>
+    `
+        : ""
+
     return `
         <p>${esc(t.hi(first[COL.parentName] || ""))}</p>
         <p>${esc(t.intro)}</p>
@@ -408,18 +598,23 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid) 
             <tr><td><strong>${esc(t.venue)}</strong></td><td>${esc(first[COL.venue])}</td></tr>
             <tr><td><strong>${esc(t.ages)}</strong></td><td>${esc(first[COL.ageRange])}</td></tr>
             <tr><td><strong>${esc(t.dropOff)}</strong></td><td>${esc(dropOffTime || "")}</td></tr>
-            <tr><td><strong>${esc(t.pickUp)}</strong></td><td>${esc(pickUpTime || "")}</td></tr>
+            <tr><td><strong>${esc(t.pickUp)}</strong></td><td>${esc(pickUpTime ? `${t.until} ${pickUpTime}` : "")}</td></tr>
             <tr><td><strong>${esc(t.tickets)}</strong></td><td>${participants.length} ${esc(countWord)}</td></tr>
             <tr><td><strong>${esc(t.total)}</strong></td><td>€${esc(orderTotal)}</td></tr>
         </table>
         <p><strong>${esc(t.perChild)}:</strong></p>
         <ul>${childLines}</ul>
         ${joinerSection}
+        ${calendarSection}
         <p>${esc(t.outro)}</p>
+        <p style="margin-top:22px;">
+            ${esc(t.signOff)}<br>
+            <strong>${esc(t.team)}</strong>
+        </p>
     `
 }
 
-async function sendEmail(to, subject, html) {
+async function sendEmail(to, subject, html, calendarEvent) {
     if (!process.env.RESEND_API_KEY) {
         throw new Error("RESEND_API_KEY is not set — refusing to send with an empty token")
     }
@@ -432,6 +627,17 @@ async function sendEmail(to, subject, html) {
     }
     if (process.env.RESEND_REPLY_TO) body.reply_to = process.env.RESEND_REPLY_TO
     if (process.env.RESEND_BCC) body.bcc = process.env.RESEND_BCC
+
+    // ★ The .ics invite travels with the email. Apple Mail, Outlook and Gmail
+    // all show an "add to calendar" control when they see one attached.
+    if (calendarEvent) {
+        body.attachments = [
+            {
+                filename: `${calendarEvent.reference || "camp"}.ics`,
+                content: Buffer.from(buildIcs(calendarEvent), "utf8").toString("base64"),
+            },
+        ]
+    }
 
     const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
