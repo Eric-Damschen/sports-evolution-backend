@@ -1,28 +1,30 @@
 // /api/stripe-webhook.js
-// Stripe calls this endpoint directly (not the buyer's browser) the moment
-// a payment succeeds. Register this URL in the Stripe Dashboard under
-// Developers → Webhooks, listening for "checkout.session.completed".
+// Stripe calls this endpoint directly the moment a payment succeeds.
+//
+// ★ Column layout matches the actual live Sheet: Role sits at column S
+// (index 18), right after Language — not at the end.
 //
 // This is the ONLY place that emails the customer — a detailed payment
-// confirmation, built from the actual booking rows in the Sheet (camp,
-// how many tickets, each child's add-ons).
+// confirmation, showing camp participants and trip guests separately.
 //
 // Additional env var needed beyond create-booking.js:
-//   STRIPE_WEBHOOK_SECRET   (shown when you create the webhook in Stripe)
+//   STRIPE_WEBHOOK_SECRET
 
 const { google } = require("googleapis")
 const Stripe = require("stripe")
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 
-// ★ Must match create-booking.js and camp-availability.js exactly — one row = one child.
 const COL = {
     bookingId: 0, createdAt: 1, camp: 2, firstName: 3, lastName: 4, dob: 5,
     club: 6, allergies: 7, clothingQty: 8, clothingSize: 9, bottleQty: 10,
     meals: 11, parentName: 12, email: 13, phone: 14, bookingTotal: 15,
-    status: 16, language: 17,
+    status: 16, language: 17, role: 18,
+    venue: 19, campDateRange: 20, ageRange: 21, dropOffTime: 22, pickUpTime: 23,
+    bookingReference: 24, startDate: 25, endDate: 26,
 }
-const STATUS_COLUMN_LETTER = "Q" // = COL.status, spelled out for the range string below
+const LAST_COLUMN = "AA"
+const STATUS_COLUMN_LETTER = "Q"
 
 async function getSheet() {
     const auth = new google.auth.JWT(
@@ -50,34 +52,36 @@ async function sendEmail(to, subject, html) {
     })
 }
 
-// ★ One booking can span several rows (one per child). This now returns
-// each matching row's NUMBER (to update its status) together with its full
-// DATA (to build a real, detailed confirmation email) — not just the row
-// numbers like before.
 async function findBookingRows(sheets, bookingId) {
     const result = await sheets.spreadsheets.values.get({
         spreadsheetId: process.env.GOOGLE_SHEET_ID,
-        range: "Bookings!A:R",
+        range: `Bookings!A:${LAST_COLUMN}`,
     })
     const rows = result.data.values || []
     const matches = []
     rows.forEach((row, i) => {
         if (row[COL.bookingId] === bookingId) {
-            matches.push({ rowNumber: i + 1, data: row }) // sheet rows are 1-indexed
+            matches.push({ rowNumber: i + 1, data: row })
         }
     })
     return matches
 }
 
-// ★ Builds the "here's what you booked" section of the email from the
-// actual row data — camp name, ticket count, and each child's add-ons.
 function buildConfirmationHtml(matches) {
     const first = matches[0].data
     const camp = first[COL.camp]
+    const venue = first[COL.venue]
+    const dateRange = first[COL.campDateRange]
+    const ageRange = first[COL.ageRange]
+    const dropOffTime = first[COL.dropOffTime]
+    const pickUpTime = first[COL.pickUpTime]
+    const reference = first[COL.bookingReference]
     const total = first[COL.bookingTotal]
-    const ticketCount = matches.length
 
-    const childLines = matches
+    const participants = matches.filter((m) => (m.data[COL.role] || "Participant") === "Participant")
+    const joiners = matches.filter((m) => m.data[COL.role] === "Joiner")
+
+    const childLines = participants
         .map(({ data }) => {
             const name = `${data[COL.firstName]} ${data[COL.lastName]}`.trim()
             const addOns = []
@@ -94,16 +98,32 @@ function buildConfirmationHtml(matches) {
         })
         .join("")
 
+    const joinerLines = joiners
+        .map(({ data }) => `<li>${`${data[COL.firstName]} ${data[COL.lastName]}`.trim()}</li>`)
+        .join("")
+
+    const joinerSection =
+        joiners.length > 0
+            ? `<p><strong>Trip tickets (${joiners.length}):</strong></p><ul>${joinerLines}</ul>`
+            : ""
+
     return `
         <p>Hi ${first[COL.parentName]},</p>
         <p>Your payment has been received and your booking is confirmed.</p>
         <table cellpadding="6" style="border-collapse:collapse;">
+            <tr><td><strong>Booking reference</strong></td><td>${reference}</td></tr>
             <tr><td><strong>Camp</strong></td><td>${camp}</td></tr>
-            <tr><td><strong>Tickets</strong></td><td>${ticketCount} ${ticketCount === 1 ? "child" : "children"}</td></tr>
+            <tr><td><strong>Dates</strong></td><td>${dateRange}</td></tr>
+            <tr><td><strong>Venue</strong></td><td>${venue}</td></tr>
+            <tr><td><strong>Ages</strong></td><td>${ageRange}</td></tr>
+            <tr><td><strong>Drop-off</strong></td><td>${dropOffTime}</td></tr>
+            <tr><td><strong>Pick-up</strong></td><td>${pickUpTime}</td></tr>
+            <tr><td><strong>Tickets</strong></td><td>${participants.length} ${participants.length === 1 ? "child" : "children"}</td></tr>
             <tr><td><strong>Total paid</strong></td><td>€${total}</td></tr>
         </table>
         <p><strong>Details per child:</strong></p>
         <ul>${childLines}</ul>
+        ${joinerSection}
         <p>See you at camp!</p>
     `
 }
@@ -113,19 +133,12 @@ exports.handler = async (event) => {
         return { statusCode: 405, body: "Method not allowed" }
     }
 
-    // --- Verify this really came from Stripe -----------------------------------
     const sig = event.headers["stripe-signature"]
-    const payload = event.isBase64Encoded
-        ? Buffer.from(event.body, "base64")
-        : event.body
+    const payload = event.isBase64Encoded ? Buffer.from(event.body, "base64") : event.body
 
     let stripeEvent
     try {
-        stripeEvent = stripe.webhooks.constructEvent(
-            payload,
-            sig,
-            process.env.STRIPE_WEBHOOK_SECRET
-        )
+        stripeEvent = stripe.webhooks.constructEvent(payload, sig, process.env.STRIPE_WEBHOOK_SECRET)
     } catch (err) {
         console.error("Webhook signature verification failed:", err.message)
         return { statusCode: 400, body: `Webhook Error: ${err.message}` }
@@ -140,7 +153,6 @@ exports.handler = async (event) => {
             const sheets = await getSheet()
             const matches = await findBookingRows(sheets, bookingId)
 
-            // Flip every row for this booking to "paid", all together.
             await Promise.all(
                 matches.map(({ rowNumber }) =>
                     sheets.spreadsheets.values.update({
@@ -153,15 +165,9 @@ exports.handler = async (event) => {
             )
 
             if (buyerEmail && matches.length > 0) {
-                await sendEmail(
-                    buyerEmail,
-                    "Payment confirmed — see you at camp!",
-                    buildConfirmationHtml(matches)
-                )
+                await sendEmail(buyerEmail, "Payment confirmed — see you at camp!", buildConfirmationHtml(matches))
             }
         } catch (err) {
-            // Log but still return 200 — Stripe will retry on non-2xx responses,
-            // which could double-send emails. Alert yourself separately instead.
             console.error("Failed to update sheet / send email:", err)
         }
     }
