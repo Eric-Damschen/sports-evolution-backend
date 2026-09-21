@@ -25,9 +25,11 @@ const COL = {
     status: 16, language: 17, role: 18,
     venue: 19, campDateRange: 20, ageRange: 21,
     bookingReference: 22, startDate: 23, endDate: 24,
+    position: 25,
 }
 const SHEET_TAB = process.env.GOOGLE_SHEET_TAB || "Bookings"
-const LAST_COLUMN = "Y"
+// Z = Position. Add the header "Position" in Z1 of the Sheet.
+const LAST_COLUMN = "Z"
 const DATA_RANGE = `${SHEET_TAB}!A:${LAST_COLUMN}`
 const STATUS_COLUMN_LETTER = "Q"
 
@@ -150,16 +152,52 @@ function allocatePersonAmounts(people, orderTotal) {
     return cents.map((c) => c / 100)
 }
 
-// "Bookings!A52:Y54" -> [52, 53, 54]
-function parseAppendedRowNumbers(updatedRange) {
-    const m = String(updatedRange || "").match(/![A-Z]+(\d+):[A-Z]+(\d+)$/)
-    if (!m) return []
-    const start = Number(m[1])
-    const end = Number(m[2])
-    if (!isFinite(start) || !isFinite(end) || end < start) return []
-    const out = []
-    for (let r = start; r <= end; r += 1) out.push(r)
-    return out
+// ★ New rows are inserted with INSERT_ROWS, and Google Sheets gives an
+// inserted row the formatting of the row above it — so the first booking
+// under the header copied its blue fill and bold text, and every booking
+// after copied that. This resets a booking's own rows to plain white.
+// Only fill, bold and text colour are touched: number or date formats you
+// set on a column are kept.
+async function resetRowFormatting(sheets, rowNumbers) {
+    if (!rowNumbers.length) return
+
+    const meta = await sheets.spreadsheets.get({
+        spreadsheetId: process.env.GOOGLE_SHEET_ID,
+        fields: "sheets.properties(sheetId,title)",
+    })
+    const tab = (meta.data.sheets || []).find((t) => t.properties.title === SHEET_TAB)
+    if (!tab) return
+
+    const first = Math.min(...rowNumbers)
+    const last = Math.max(...rowNumbers)
+
+    await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: process.env.GOOGLE_SHEET_ID,
+        requestBody: {
+            requests: [
+                {
+                    repeatCell: {
+                        range: {
+                            sheetId: tab.properties.sheetId,
+                            startRowIndex: first - 1, // 0-based
+                            endRowIndex: last,        // exclusive
+                        },
+                        cell: {
+                            userEnteredFormat: {
+                                backgroundColor: { red: 1, green: 1, blue: 1 },
+                                textFormat: {
+                                    bold: false,
+                                    foregroundColor: { red: 0, green: 0, blue: 0 },
+                                },
+                            },
+                        },
+                        fields:
+                            "userEnteredFormat(backgroundColor,textFormat(bold,foregroundColor))",
+                    },
+                },
+            ],
+        },
+    })
 }
 
 async function setStatusForRows(sheets, rowNumbers, status) {
@@ -264,6 +302,7 @@ exports.handler = async (event) => {
             ROLE_PARTICIPANT,
             location || "", dateRange || "", ageRange || "",
             bookingReference, startDate || "", endDate || "",
+            child.position || "",
         ])
 
         const joinerRows = guests.map((guest, i) => [
@@ -276,6 +315,7 @@ exports.handler = async (event) => {
             ROLE_JOINER,
             location || "", dateRange || "", ageRange || "",
             bookingReference, startDate || "", endDate || "",
+            "",
         ])
 
         /* --- 3. Claim the seats, then verify we won the race --- */
@@ -293,19 +333,31 @@ exports.handler = async (event) => {
 
         const updatedRange =
             (appendRes.data && appendRes.data.updates && appendRes.data.updates.updatedRange) || ""
-        const ourRowNumbers = parseAppendedRowNumbers(updatedRange)
-        const firstRow = ourRowNumbers.length ? ourRowNumbers[0] : null
+
+        // ★ Our rows are found by Booking ID, never by the row numbers the
+        // append reported. The cleanup job deletes abandoned rows, which moves
+        // every row beneath them up — a row number from a second ago may
+        // already point at someone else's booking.
+        function findOurRows(rows) {
+            return rows
+                .filter((r) => r.data[COL.bookingId] === bookingId)
+                .map((r) => r.rowNumber)
+        }
 
         async function releaseSeats() {
             try {
-                await setStatusForRows(sheets, ourRowNumbers, "released")
+                const fresh = await getAllRows(sheets)
+                await setStatusForRows(sheets, findOurRows(fresh), "released")
             } catch (e) {
                 console.error("[create-booking] could not release rows:", e.message)
             }
         }
 
+        const afterRows = await getAllRows(sheets)
+        const ourRowNumbers = findOurRows(afterRows)
+        const firstRow = ourRowNumbers.length ? Math.min(...ourRowNumbers) : null
+
         if (firstRow !== null) {
-            const afterRows = await getAllRows(sheets)
 
             if (totalSpots) {
                 const takenBefore = countBookedSpots(afterRows, camp, ROLE_PARTICIPANT, firstRow)
@@ -334,10 +386,17 @@ exports.handler = async (event) => {
             }
         } else {
             console.error(
-                `[create-booking] could not read back appended range "${updatedRange}" — ` +
-                "capacity verified only before the write"
+                `[create-booking] booking ${bookingId} not found after append ` +
+                `(range "${updatedRange}") — capacity verified only before the write`
             )
         }
+
+        // Purely cosmetic, so it never blocks or fails the booking. Runs in
+        // parallel with the Stripe call below. The cleanup job never deletes
+        // rows younger than 2 minutes, so these row numbers can't shift.
+        const formatting = resetRowFormatting(sheets, ourRowNumbers).catch((e) =>
+            console.error("[create-booking] could not reset row formatting:", e.message)
+        )
 
         /* --- 4. Stripe Checkout --- */
 
@@ -403,6 +462,8 @@ exports.handler = async (event) => {
             `${participantRows.length} participant(s), ${joinerRows.length} joiner(s), ` +
             `€${amount}, session ${session.id}`
         )
+
+        await formatting
 
         return json(200, { checkoutUrl: session.url, bookingReference })
     } catch (err) {
