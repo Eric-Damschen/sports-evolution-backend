@@ -27,3 +27,10 @@
   from = "/api/get-booking-confirmation"
   to = "/.netlify/functions/get-booking-confirmation"
   status = 200
+
+# Removes rows for checkouts that were never paid. Runs every 15 minutes and
+# waits while anyone is mid-checkout. Scheduled functions only run on the
+# published production deploy — use "Run now" in the Netlify Functions tab
+# to trigger it by hand.
+[functions."cleanup-abandoned"]
+  schedule = "*/15 * * * *"
