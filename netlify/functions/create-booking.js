@@ -215,6 +215,17 @@ async function setStatusForRows(sheets, rowNumbers, status) {
     return rowNumbers.length
 }
 
+// ★ Stripe Checkout in the same language as the booking. "auto" would follow
+// the customer's BROWSER, which is often not the language they were reading
+// the site in — a German-speaking parent with an English browser would get an
+// English checkout after booking in German.
+const STRIPE_LOCALES = { en: "en", fr: "fr", de: "de", pt: "pt" }
+
+function stripeLocale(language) {
+    const code = String(language || "").trim().toLowerCase().slice(0, 2)
+    return STRIPE_LOCALES[code] || "auto"
+}
+
 /* ---------------- Handler ---------------- */
 
 const MAX_TOTAL_EUR = toNumber(process.env.MAX_BOOKING_TOTAL_EUR, 5000)
@@ -449,7 +460,7 @@ exports.handler = async (event) => {
                 },
                 success_url: `${siteUrl}${CONFIRMATION_PATH}?session_id={CHECKOUT_SESSION_ID}`,
                 cancel_url: siteUrl,
-                locale: "auto",
+                locale: stripeLocale(language),
             })
         } catch (stripeErr) {
             // Seats are already claimed — hand them straight back.
