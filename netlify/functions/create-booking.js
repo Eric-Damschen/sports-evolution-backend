@@ -476,7 +476,15 @@ exports.handler = async (event) => {
 
         await formatting
 
-        return json(200, { checkoutUrl: session.url, bookingReference })
+        // ★ The confirmation link is returned too, so the booking form can send
+        // the parent there itself if Stripe's own redirect never happens
+        // (in-app browsers and some wallet flows on phones can drop it).
+        return json(200, {
+            checkoutUrl: session.url,
+            bookingReference,
+            sessionId: session.id,
+            confirmationUrl: `${siteUrl}${CONFIRMATION_PATH}?session_id=${session.id}`,
+        })
     } catch (err) {
         // The message is returned as well as logged, so a failing booking can
         // be diagnosed from the browser console during setup.
