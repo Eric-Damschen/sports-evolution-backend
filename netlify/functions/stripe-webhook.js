@@ -173,7 +173,12 @@ async function handlePaid(session) {
         console.error(`[webhook] session ${session.id} carries no bookingId — ignoring`)
         return
     }
-    if (session.payment_status && session.payment_status !== "paid") {
+    // "no_payment_required" = a €0 booking made free by a FREE code.
+    if (
+        session.payment_status &&
+        session.payment_status !== "paid" &&
+        session.payment_status !== "no_payment_required"
+    ) {
         console.log(`[webhook] ${bookingId} not paid yet (${session.payment_status})`)
         return
     }
