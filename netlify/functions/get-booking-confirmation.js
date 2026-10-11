@@ -77,7 +77,8 @@ exports.handler = async (event) => {
     try {
         const session = await stripe.checkout.sessions.retrieve(session_id)
 
-        if (session.payment_status !== "paid") {
+        // "no_payment_required" = a €0 booking made free by a FREE code.
+        if (session.payment_status !== "paid" && session.payment_status !== "no_payment_required") {
             return json(402, { error: "Payment not completed for this session" })
         }
 
