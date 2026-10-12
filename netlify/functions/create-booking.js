@@ -38,12 +38,16 @@ const LAST_COLUMN = "AB"
 const MIN_AGE = 7
 
 // "How did you hear about us?" — form key → English text for the Sheet.
+// Short names for staff; the form shows friendlier wording per language.
 const REFERRAL_LABELS = {
-    friends: "Friends",
-    internet: "Internet research",
-    facebook: "Facebook",
+    friends: "Friends/family",
+    club: "Club or coach",
     instagram: "Instagram",
-    club: "Internal club message",
+    facebook: "Facebook",
+    tiktok: "TikTok",
+    metaAd: "Meta ad",
+    internet: "Internet search",
+    returning: "Came before",
     other: "Other",
 }
 const REFERRAL_OTHER_MAX = 60
