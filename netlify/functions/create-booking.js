@@ -27,11 +27,66 @@ const COL = {
     bookingReference: 22, startDate: 23, endDate: 24,
     position: 25,
     discountCode: 26,
+    referral: 27,
 }
 const SHEET_TAB = process.env.GOOGLE_SHEET_TAB || "Bookings"
-// Z = Position, AA = Discount code. Headers: Z1 "Position",
-// AA1 "Discount code".
-const LAST_COLUMN = "AA"
+// Z = Position, AA = Discount code, AB = How did you hear about us.
+// Headers: Z1 "Position", AA1 "Discount code", AB1 "Heard about us".
+const LAST_COLUMN = "AB"
+
+// ★ Minimum age on the first camp day. Same value as MIN_AGE in the forms.
+const MIN_AGE = 7
+
+// "How did you hear about us?" — form key → English text for the Sheet.
+const REFERRAL_LABELS = {
+    friends: "Friends",
+    internet: "Internet research",
+    facebook: "Facebook",
+    instagram: "Instagram",
+    club: "Internal club message",
+    other: "Other",
+}
+const REFERRAL_OTHER_MAX = 60
+
+function referralText(referral) {
+    const source = referral && typeof referral.source === "string" ? referral.source : ""
+    if (!Object.prototype.hasOwnProperty.call(REFERRAL_LABELS, source)) return ""
+    if (source !== "other") return REFERRAL_LABELS[source]
+    // Free text: single line, no control characters, capped; a leading = + - @
+    // is neutralised so the Sheet never treats it as a formula.
+    const other = String((referral && referral.other) || "")
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, REFERRAL_OTHER_MAX)
+        .replace(/^[=+\-@]+/, "")
+        .trim()
+    return other ? `Other: ${other}` : "Other"
+}
+
+function todayISOLuxembourg() {
+    // en-CA formats as YYYY-MM-DD
+    return new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Luxembourg",
+        year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(new Date())
+}
+
+// Age in whole years on refISO. null when dob is not a real YYYY-MM-DD date.
+function ageOn(dob, refISO) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dob || ""))
+    const r = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(refISO || ""))
+    if (!m || !r) return null
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+    const check = new Date(Date.UTC(y, mo - 1, d))
+    if (check.getUTCFullYear() !== y || check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d) {
+        return null
+    }
+    const ry = Number(r[1]), rmo = Number(r[2]), rd = Number(r[3])
+    let age = ry - y
+    if (rmo < mo || (rmo === mo && rd < d)) age -= 1
+    return age
+}
 const DATA_RANGE = `${SHEET_TAB}!A:${LAST_COLUMN}`
 const STATUS_COLUMN_LETTER = "Q"
 
@@ -350,7 +405,7 @@ exports.handler = async (event) => {
             camp, campTitle, location, dateRange, startDate, endDate, ageRange,
             dropOffTime, pickUpTime, children, tripGuests, contact, total,
             addOnsIncluded, totalSpots, tripTotalSpots, language,
-            campStartISO, campEndISO, consents, discountCode,
+            campStartISO, campEndISO, consents, discountCode, referral,
         } = JSON.parse(event.body || "{}")
 
         if (!camp || !Array.isArray(children) || children.length === 0 || !contact) {
@@ -373,6 +428,23 @@ exports.handler = async (event) => {
         if (!consents || consents.terms !== true || consents.photosWhatsapp !== true) {
             return json(400, { error: "consentRequired" })
         }
+
+        // ★ Every child must be at least MIN_AGE on the first camp day (today
+        // if the camp date is missing). Checked here, not only in the form.
+        const ageRefISO = /^\d{4}-\d{2}-\d{2}$/.test(String(campStartISO || ""))
+            ? String(campStartISO)
+            : todayISOLuxembourg()
+        for (const child of children) {
+            const age = ageOn(child && child.dob, ageRefISO)
+            if (age === null) {
+                return json(400, { error: "invalidDateOfBirth" })
+            }
+            if (age < MIN_AGE) {
+                return json(400, { error: "childTooYoung", minAge: MIN_AGE })
+            }
+        }
+
+        const heardAboutUs = referralText(referral)
 
         const guests = Array.isArray(tripGuests) ? tripGuests : []
         const bookingId = randomUUID()
@@ -446,6 +518,7 @@ exports.handler = async (event) => {
             bookingReference, startDate || "", endDate || "",
             child.position || "",
             appliedCode,
+            heardAboutUs,
         ])
 
         const joinerRows = guests.map((guest, i) => [
@@ -460,6 +533,7 @@ exports.handler = async (event) => {
             bookingReference, startDate || "", endDate || "",
             "",
             appliedCode,
+            heardAboutUs,
         ])
 
         /* --- 3. Claim the seats, then verify we won the race --- */
