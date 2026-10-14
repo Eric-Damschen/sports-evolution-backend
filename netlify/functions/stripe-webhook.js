@@ -29,9 +29,13 @@ const COL = {
     status: 16, language: 17, role: 18,
     venue: 19, campDateRange: 20, ageRange: 21,
     bookingReference: 22, startDate: 23, endDate: 24,
+    position: 25, discountCode: 26, referral: 27,
 }
 const SHEET_TAB = process.env.GOOGLE_SHEET_TAB || "Bookings"
-const DATA_RANGE = `${SHEET_TAB}!A:Y`
+const DATA_RANGE = `${SHEET_TAB}!A:AB`
+
+// ★ Who gets the short "new booking" alert. Comma-separate for several.
+const ADMIN_NOTIFY_EMAIL = process.env.ADMIN_NOTIFY_EMAIL || "info@sportsevolution.lu"
 const STATUS_COLUMN_LETTER = "Q"
 
 const ROLE_PARTICIPANT = "Participant"
@@ -207,6 +211,15 @@ async function handlePaid(session) {
     const updated = await setStatus(sheets, matches, "paid")
     console.log(`[webhook] ${bookingId}: ${updated} row(s) marked paid`)
 
+    // ★ Short alert to the team. Sent once, only here (after the row flips to
+    // paid), and a failure never blocks the parent's confirmation email.
+    try {
+        await sendAdminNotification(matches, session)
+        console.log(`[webhook] ${bookingId}: team alert sent to ${ADMIN_NOTIFY_EMAIL}`)
+    } catch (err) {
+        console.error(`[webhook] ${bookingId}: team alert failed:`, err.message)
+    }
+
     const buyerEmail =
         matches[0].data[COL.email] ||
         (session.customer_details && session.customer_details.email) ||
@@ -240,6 +253,83 @@ async function handlePaid(session) {
     )
 
     console.log(`[webhook] ${bookingId}: confirmation sent to ${buyerEmail} (${lang})`)
+}
+
+/* ---------------- Team alert ---------------- */
+
+function formatEuro(n) {
+    return isFinite(n) ? `€${n.toFixed(2)}` : "—"
+}
+
+function buildAdminNotification(matches, session) {
+    const first = matches[0].data
+    const ref = first[COL.bookingReference] || ""
+    const participants = matches.filter(
+        (m) => (m.data[COL.role] || ROLE_PARTICIPANT) === ROLE_PARTICIPANT
+    )
+    const guests = matches.filter((m) => m.data[COL.role] === ROLE_JOINER)
+    const amountPaid =
+        typeof session.amount_total === "number"
+            ? session.amount_total / 100
+            : sumRowTotals(matches)
+    const n = participants.length
+    const campName = first[COL.camp] || ""
+
+    const subject =
+        `New booking ${ref} · ${campName} · ` +
+        `${n} ${n === 1 ? "child" : "children"} · ${formatEuro(amountPaid)}`
+
+    const childLine = (m) => {
+        const d = m.data
+        const extras = []
+        const qty = Number(d[COL.clothingQty]) || 0
+        if (qty > 0) extras.push(`clothing ${qty}×${d[COL.clothingSize] || "?"}`)
+        const bottles = Number(d[COL.bottleQty]) || 0
+        if (bottles > 0) extras.push(`bottle ${bottles}`)
+        if (d[COL.meals] === "Yes") extras.push("meals")
+        return (
+            `${esc(d[COL.firstName])} ${esc(d[COL.lastName])}` +
+            (d[COL.club] ? ` · ${esc(d[COL.club])}` : "") +
+            (extras.length ? ` · ${esc(extras.join(", "))}` : "")
+        )
+    }
+
+    const rows = [
+        ["Camp", esc(campName)],
+        ["Dates", esc(first[COL.campDateRange] || "")],
+        ["Children", participants.map(childLine).join("<br>")],
+        ...(guests.length
+            ? [["Trip guests", guests.map((m) => `${esc(m.data[COL.firstName])} ${esc(m.data[COL.lastName])}`).join("<br>")]]
+            : []),
+        ["Parent", `${esc(first[COL.parentName])}<br>${esc(first[COL.email])}<br>${esc(first[COL.phone])}`],
+        ["Paid", esc(formatEuro(amountPaid))],
+        ...(first[COL.discountCode] ? [["Code", esc(first[COL.discountCode])]] : []),
+        ...(first[COL.referral] ? [["Heard via", esc(first[COL.referral])]] : []),
+    ]
+
+    const html =
+        `<div style="font-family:Arial,sans-serif;font-size:14px;color:#111;line-height:1.5">` +
+        `<p style="margin:0 0 12px"><strong>New booking ${esc(ref)}</strong></p>` +
+        `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse">` +
+        rows
+            .map(
+                ([k, v]) =>
+                    `<tr><td style="padding:4px 16px 4px 0;color:#666;vertical-align:top;white-space:nowrap">${k}</td>` +
+                    `<td style="padding:4px 0;vertical-align:top">${v}</td></tr>`
+            )
+            .join("") +
+        `</table>` +
+        `<p style="margin:12px 0 0;color:#666">Full details in the Google Sheet.</p>` +
+        `</div>`
+
+    return { subject, html, replyTo: first[COL.email] || "" }
+}
+
+async function sendAdminNotification(matches, session) {
+    const to = ADMIN_NOTIFY_EMAIL.split(",").map((s) => s.trim()).filter(Boolean)
+    if (!to.length) return
+    const { subject, html, replyTo } = buildAdminNotification(matches, session)
+    await sendEmail(to, subject, html, null, { replyTo, skipBcc: true })
 }
 
 /* ---------------- Expired ---------------- */
@@ -634,7 +724,7 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
     `
 }
 
-async function sendEmail(to, subject, html, calendarEvent) {
+async function sendEmail(to, subject, html, calendarEvent, options = {}) {
     if (!process.env.RESEND_API_KEY) {
         throw new Error("RESEND_API_KEY is not set — refusing to send with an empty token")
     }
@@ -645,8 +735,9 @@ async function sendEmail(to, subject, html, calendarEvent) {
         subject,
         html,
     }
-    if (process.env.RESEND_REPLY_TO) body.reply_to = process.env.RESEND_REPLY_TO
-    if (process.env.RESEND_BCC) body.bcc = process.env.RESEND_BCC
+    if (options.replyTo) body.reply_to = options.replyTo
+    else if (process.env.RESEND_REPLY_TO) body.reply_to = process.env.RESEND_REPLY_TO
+    if (process.env.RESEND_BCC && !options.skipBcc) body.bcc = process.env.RESEND_BCC
 
     // ★ The .ics invite travels with the email. Apple Mail, Outlook and Gmail
     // all show an "add to calendar" control when they see one attached.
