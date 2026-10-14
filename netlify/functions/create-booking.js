@@ -439,6 +439,10 @@ exports.handler = async (event) => {
             ? String(campStartISO)
             : todayISOLuxembourg()
         for (const child of children) {
+            // Club is required ("/" when the child has none).
+            if (!child || !String(child.club || "").trim()) {
+                return json(400, { error: "missingClub" })
+            }
             const age = ageOn(child && child.dob, ageRefISO)
             if (age === null) {
                 return json(400, { error: "invalidDateOfBirth" })
