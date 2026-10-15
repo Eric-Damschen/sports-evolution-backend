@@ -68,6 +68,31 @@ function referralText(referral) {
     return other ? `Other: ${other}` : "Other"
 }
 
+// One clean line of text for Stripe metadata.
+function metaText(value, max) {
+    return String(value || "")
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, max)
+}
+
+// Multi-line text for Stripe metadata: keeps line breaks, max 1500 chars.
+function goodToKnowParts(value) {
+    const text = String(value || "")
+        .replace(/\r\n?/g, "\n")
+        .replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, " ")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim()
+        .slice(0, 1500)
+    const parts = {}
+    for (let i = 0; i * 500 < text.length; i++) {
+        parts[`goodToKnow${i + 1}`] = text.slice(i * 500, (i + 1) * 500)
+    }
+    return parts
+}
+
 function todayISOLuxembourg() {
     // en-CA formats as YYYY-MM-DD
     return new Intl.DateTimeFormat("en-CA", {
@@ -410,6 +435,7 @@ exports.handler = async (event) => {
             dropOffTime, pickUpTime, children, tripGuests, contact, total,
             addOnsIncluded, totalSpots, tripTotalSpots, language,
             campStartISO, campEndISO, consents, discountCode, referral,
+            sport, venueAddress, goodToKnow,
         } = JSON.parse(event.body || "{}")
 
         if (!camp || !Array.isArray(children) || children.length === 0 || !contact) {
@@ -645,6 +671,14 @@ exports.handler = async (event) => {
             // human date like "20 October 2026".
             campStartISO: campStartISO || "",
             campEndISO: campEndISO || "",
+            // ★ For the "Camps" tab and the camp-info email (7 days before).
+            // Stripe caps metadata values at 500 characters.
+            sport: metaText(sport, 40),
+            location: metaText(location, 120),
+            venueAddress: metaText(venueAddress, 300),
+            // "Good to know" from the camp page, line breaks kept, in up to
+            // three 500-character parts (Stripe's limit per value).
+            ...goodToKnowParts(goodToKnow),
         }
 
         let session
