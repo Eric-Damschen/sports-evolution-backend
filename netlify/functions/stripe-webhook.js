@@ -771,6 +771,8 @@ const EMAIL = {
     head: "'Space Grotesk',Arial,Helvetica,sans-serif",
 }
 const EMAIL_ASSET_BASE = String(process.env.EMAIL_ASSET_BASE || process.env.URL || "").replace(/\/$/, "")
+// The long one-line logo, shown once at the bottom of the email.
+const EMAIL_LOGO_FILE = String(process.env.EMAIL_LOGO_FILE || "email/se-logo-long.png").replace(/^\//, "")
 
 function emailLabel(text) {
     return `<p style="margin:0 0 8px;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;font-weight:bold;color:${EMAIL.text};">${esc(text)}</p>`
@@ -854,15 +856,14 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
         : ""
 
     const logo = EMAIL_ASSET_BASE
-        ? `<tr><td style="padding:28px 28px 0;"><img src="${esc(EMAIL_ASSET_BASE)}/email/se-logo.png" width="140" height="48" alt="Sports Evolution" style="display:block;border:0;width:140px;height:auto;"></td></tr>`
+        ? `<img src="${esc(EMAIL_ASSET_BASE)}/${esc(EMAIL_LOGO_FILE)}" width="200" height="15" alt="Sports Evolution" style="display:block;border:0;width:200px;height:auto;margin-top:24px;">`
         : ""
 
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body style="margin:0;padding:0;background:${EMAIL.page};">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.page};"><tr><td align="center" style="padding:24px 12px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:${EMAIL.card};border:1px solid ${EMAIL.border};border-radius:4px;font-family:${EMAIL.font};color:${EMAIL.text};font-size:15px;line-height:1.55;">
-${logo}
-<tr><td style="padding:24px 28px 0;">
+<tr><td style="padding:28px 28px 0;">
 <p style="margin:0 0 14px;">${esc(t.hi(first[COL.parentName] || ""))}</p>
 <h1 style="margin:0 0 10px;font-family:${EMAIL.head};font-size:28px;line-height:1.2;font-weight:bold;letter-spacing:-0.01em;color:${EMAIL.text};">${esc(t.headline)}</h1>
 <p style="margin:0;color:${EMAIL.muted};">${esc(t.intro)}</p>
@@ -880,6 +881,7 @@ ${calendarSection}
 <tr><td style="padding:24px 28px 28px;">
 <p style="margin:0 0 16px;">${esc(t.outro)}</p>
 <p style="margin:0;">${esc(t.signOff)}<br><strong>${esc(t.team)}</strong></p>
+${logo}
 </td></tr>
 </table>
 </td></tr></table>
