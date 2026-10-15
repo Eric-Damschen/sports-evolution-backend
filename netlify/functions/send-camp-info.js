@@ -59,6 +59,8 @@ const DRY_RUN = String(process.env.CAMP_INFO_DRY_RUN || "").toLowerCase() === "t
 const ADMIN_NOTIFY_EMAIL = process.env.ADMIN_NOTIFY_EMAIL || "info@sportsevolution.lu"
 const REPLY_TO = process.env.RESEND_REPLY_TO || "info@sportsevolution.lu"
 const ASSET_BASE = String(process.env.EMAIL_ASSET_BASE || process.env.URL || "").replace(/\/$/, "")
+// The long one-line logo, shown once at the bottom of the email.
+const LOGO_FILE = String(process.env.EMAIL_LOGO_FILE || "email/se-logo-long.png").replace(/^\//, "")
 
 /* ---------------- Small helpers ---------------- */
 
@@ -410,7 +412,7 @@ function buildEmail({ t, parentName, campRow, link, startISO, endISO, participan
         : ""
 
     const logo = ASSET_BASE
-        ? `<tr><td style="padding:28px 28px 0;"><img src="${esc(ASSET_BASE)}/email/se-logo.png" width="140" height="48" alt="Sports Evolution" style="display:block;border:0;width:140px;height:auto;"></td></tr>`
+        ? `<img src="${esc(ASSET_BASE)}/${esc(LOGO_FILE)}" width="200" height="15" alt="Sports Evolution" style="display:block;border:0;width:200px;height:auto;margin-top:24px;">`
         : ""
 
     const startDay = t.headingDay
@@ -421,8 +423,7 @@ function buildEmail({ t, parentName, campRow, link, startISO, endISO, participan
 <body style="margin:0;padding:0;background:${C.page};">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.page};"><tr><td align="center" style="padding:24px 12px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:${C.card};border:1px solid ${C.border};border-radius:4px;font-family:${FONT};color:${C.text};font-size:15px;line-height:1.55;">
-${logo}
-<tr><td style="padding:24px 28px 0;">
+<tr><td style="padding:28px 28px 0;">
 <p style="margin:0 0 14px;">${esc(t.hi(parentName))}</p>
 <h1 style="margin:0 0 10px;font-family:${FONT_HEAD};font-size:28px;line-height:1.2;font-weight:bold;letter-spacing:-0.01em;color:${C.text};">${esc(t.heading(startDay))}</h1>
 <p style="margin:0;color:${C.muted};">${esc(t.intro)}</p>
@@ -448,6 +449,7 @@ ${bringHtml}
 <p style="margin:0 0 16px;">${esc(t.questions)} <a href="mailto:info@sportsevolution.lu" style="color:${C.text};">info@sportsevolution.lu</a>.</p>
 <p style="margin:0 0 16px;">${esc(t.outro)}</p>
 <p style="margin:0;">${esc(t.signOff)}<br><strong>${esc(t.team)}</strong></p>
+${logo}
 </td></tr>
 </table>
 </td></tr></table>
