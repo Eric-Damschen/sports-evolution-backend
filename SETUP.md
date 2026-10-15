@@ -16,7 +16,7 @@ netlify/functions/
     update-overview.js
     register-camp.js
 email/
-    se-logo.png      (logo in the confirmation and camp-info emails)
+    se-logo-long.png (logo at the bottom of the confirmation and camp-info emails)
 ```
 
 Every function is self-contained. **Delete `netlify/lib/` and `public/` from the
@@ -45,6 +45,7 @@ Optional:
 | Variable | Default | |
 |---|---|---|
 | `RESEND_BCC` | — | a copy of every confirmation email to you |
+| `EMAIL_LOGO_FILE` | `email/se-logo-long.png` | path of the email logo in this repo, if yours has another name |
 | `ALLOWED_ORIGINS` | `https://www.sportsevolution.lu,https://sportsevolution.lu` | websites allowed to report camps to `register-camp` |
 | `CAMP_INFO_DRY_RUN` | — | `true` = the camp-info job only logs what it would send |
 | `ADMIN_NOTIFY_EMAIL` | `info@sportsevolution.lu` | short "new booking" alert after each successful payment (comma-separate several addresses) |
