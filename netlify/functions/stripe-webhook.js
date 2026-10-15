@@ -220,6 +220,23 @@ async function handlePaid(session) {
         console.error(`[webhook] ${bookingId}: team alert failed:`, err.message)
     }
 
+    // ★ Adds this camp to the "Camps" tab (or refreshes its dates and times)
+    // so you only have to paste the WhatsApp link. Never blocks the email.
+    try {
+        await upsertCampRow(sheets, matches[0].data[COL.camp], {
+            location: metadata.location || matches[0].data[COL.venue] || "",
+            sport: metadata.sport || sportKeyFromCamp(matches[0].data[COL.camp]),
+            start: metadata.campStartISO || "",
+            end: metadata.campEndISO || "",
+            dropOff: metadata.dropOffTime || "",
+            pickUp: metadata.pickUpTime || "",
+            address: metadata.venueAddress || "",
+            goodToKnow: [metadata.goodToKnow1, metadata.goodToKnow2, metadata.goodToKnow3].filter(Boolean).join(""),
+        })
+    } catch (err) {
+        console.error(`[webhook] ${bookingId}: Camps tab update failed:`, err.message)
+    }
+
     const buyerEmail =
         matches[0].data[COL.email] ||
         (session.customer_details && session.customer_details.email) ||
@@ -247,12 +264,102 @@ async function handlePaid(session) {
             metadata.pickUpTime,
             t,
             amountPaid,
-            calendarEvent
+            calendarEvent,
+            metadata
         ),
         calendarEvent
     )
 
     console.log(`[webhook] ${bookingId}: confirmation sent to ${buyerEmail} (${lang})`)
+}
+
+/* ---------------- Camps tab ---------------- */
+
+// One row per camp. The code fills every column except B (WhatsApp link),
+// which is yours. send-camp-info.js reads this tab.
+const CAMPS_TAB = process.env.CAMPS_TAB || "Camps"
+const CAMPS_HEADER = [
+    "Camp", "WhatsApp link", "Location", "Sport", "Start date",
+    "End date", "Drop-off", "Pick-up", "Venue address", "Good to know",
+]
+const CAMP_AUTO_COLS = { location: 2, sport: 3, start: 4, end: 5, dropOff: 6, pickUp: 7, address: 8, goodToKnow: 9 }
+
+function quoteTab(name) {
+    return `'${String(name).replace(/'/g, "''")}'`
+}
+
+// "Mamer (football) · December 2026" → "football"
+function sportKeyFromCamp(camp) {
+    const m = /\(([^)]+)\)/.exec(String(camp || ""))
+    return m ? m[1].trim().toLowerCase() : ""
+}
+
+async function ensureCampsTab(sheets) {
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties.title" })
+    const exists = (meta.data.sheets || []).some((t) => t.properties.title === CAMPS_TAB)
+    if (exists) return
+    try {
+        await sheets.spreadsheets.batchUpdate({
+            spreadsheetId,
+            requestBody: {
+                requests: [{ addSheet: { properties: { title: CAMPS_TAB, gridProperties: { frozenRowCount: 1 } } } }],
+            },
+        })
+    } catch (err) {
+        // Created by another run a moment ago — fine.
+        if (!/already exists/i.test(String(err && err.message))) throw err
+    }
+    await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${quoteTab(CAMPS_TAB)}!A1:J1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [CAMPS_HEADER] },
+    })
+}
+
+async function upsertCampRow(sheets, campKey, info) {
+    const key = String(campKey || "").trim()
+    if (!key) return
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    await ensureCampsTab(sheets)
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(CAMPS_TAB)}!A:J` })
+    const rows = res.data.values || []
+    const idx = rows.findIndex((r, i) => i > 0 && String(r[0] || "").trim() === key)
+
+    if (idx === -1) {
+        const row = new Array(CAMPS_HEADER.length).fill("")
+        row[0] = key
+        for (const [field, col] of Object.entries(CAMP_AUTO_COLS)) row[col] = String(info[field] || "")
+        await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: `${quoteTab(CAMPS_TAB)}!A:J`,
+            valueInputOption: "RAW",
+            insertDataOption: "INSERT_ROWS",
+            requestBody: { values: [row] },
+        })
+        return
+    }
+
+    // Existing camp: refresh the code's columns with any new, non-empty value.
+    // Column B (WhatsApp link) is never written.
+    const current = rows[idx]
+    const data = []
+    for (const [field, col] of Object.entries(CAMP_AUTO_COLS)) {
+        const value = String(info[field] || "")
+        if (value && value !== String(current[col] || "")) {
+            data.push({
+                range: `${quoteTab(CAMPS_TAB)}!${String.fromCharCode(65 + col)}${idx + 1}`,
+                values: [[value]],
+            })
+        }
+    }
+    if (data.length) {
+        await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId,
+            requestBody: { valueInputOption: "RAW", data },
+        })
+    }
 }
 
 /* ---------------- Team alert ---------------- */
@@ -565,6 +672,8 @@ function buildIcs(ev) {
 const T = {
     en: {
         subject: (ref) => `Payment confirmed — ${ref}`,
+        headline: "Booking confirmed", sport: "Sport", map: "Open in Google Maps",
+        sports: { football: "Football", basketball: "Basketball", volleyball: "Volleyball" },
         hi: (n) => `Hi ${n},`,
         intro: "Your payment has been received and your booking is confirmed.",
         reference: "Booking reference", camp: "Camp", dates: "Dates", venue: "Venue",
@@ -584,6 +693,8 @@ const T = {
     },
     fr: {
         subject: (ref) => `Paiement confirmé — ${ref}`,
+        headline: "Réservation confirmée", sport: "Sport", map: "Ouvrir dans Google Maps",
+        sports: { football: "Football", basketball: "Basketball", volleyball: "Volleyball" },
         hi: (n) => `Bonjour ${n},`,
         intro: "Votre paiement a bien été reçu et votre réservation est confirmée.",
         reference: "Référence de réservation", camp: "Stage", dates: "Dates", venue: "Lieu",
@@ -603,6 +714,8 @@ const T = {
     },
     de: {
         subject: (ref) => `Zahlung bestätigt — ${ref}`,
+        headline: "Buchung bestätigt", sport: "Sport", map: "In Google Maps öffnen",
+        sports: { football: "Fußball", basketball: "Basketball", volleyball: "Volleyball" },
         hi: (n) => `Hallo ${n},`,
         intro: "Ihre Zahlung ist eingegangen und Ihre Buchung ist bestätigt.",
         reference: "Buchungsreferenz", camp: "Camp", dates: "Daten", venue: "Ort",
@@ -622,6 +735,8 @@ const T = {
     },
     pt: {
         subject: (ref) => `Pagamento confirmado — ${ref}`,
+        headline: "Reserva confirmada", sport: "Desporto", map: "Abrir no Google Maps",
+        sports: { football: "Futebol", basketball: "Basquetebol", volleyball: "Voleibol" },
         hi: (n) => `Olá ${n},`,
         intro: "O seu pagamento foi recebido e a sua reserva está confirmada.",
         reference: "Referência da reserva", camp: "Campo", dates: "Datas", venue: "Local",
@@ -641,7 +756,28 @@ const T = {
     },
 }
 
-function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, calendarEvent) {
+// ★ Same design as the camp-info email (send-camp-info.js): booking-form
+// colours, one logo at the top, beige boxes, amber note.
+const EMAIL = {
+    page: "#F2EFEA", card: "#FBFAF8", box: "#F7F4EF", border: "#E6E0D8",
+    text: "#12110F", muted: "#5E5B57", amberBg: "#FBF0DC", amberBorder: "#FADDA9",
+    amberText: "#8A5C0A",
+    font: "'IBM Plex Sans',Arial,Helvetica,sans-serif",
+    head: "'Space Grotesk',Arial,Helvetica,sans-serif",
+}
+const EMAIL_ASSET_BASE = String(process.env.EMAIL_ASSET_BASE || process.env.URL || "").replace(/\/$/, "")
+
+function emailLabel(text) {
+    return `<p style="margin:0 0 8px;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;font-weight:bold;color:${EMAIL.text};">${esc(text)}</p>`
+}
+
+function emailRow(name, valueHtml, last) {
+    const line = last ? "" : `border-bottom:1px solid ${EMAIL.border};`
+    return `<tr><td style="padding:12px 16px;color:${EMAIL.muted};width:110px;vertical-align:top;${line}">${esc(name)}</td>` +
+        `<td style="padding:12px 16px 12px 0;vertical-align:top;${line}">${valueHtml}</td></tr>`
+}
+
+function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, calendarEvent, metadata = {}) {
     const first = matches[0].data
 
     const orderTotal = isFinite(amountPaid)
@@ -653,75 +789,93 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
     )
     const joiners = matches.filter((m) => m.data[COL.role] === ROLE_JOINER)
 
-    const childLines = participants
+    const childCards = participants
         .map(({ data }) => {
             const name = `${data[COL.firstName]} ${data[COL.lastName]}`.trim()
             const addOns = []
-
             const clothingQty = Number(data[COL.clothingQty]) || 0
             if (clothingQty > 0) {
                 const size = data[COL.clothingSize]
-                addOns.push(
-                    `${esc(t.clothing)} ×${clothingQty}${size ? ` (${esc(t.size)} ${esc(size)})` : ""}`
-                )
+                addOns.push(`${t.clothing} ×${clothingQty}${size ? ` (${t.size} ${size})` : ""}`)
             }
             const bottleQty = Number(data[COL.bottleQty]) || 0
-            if (bottleQty > 0) addOns.push(`${esc(t.bottle)} ×${bottleQty}`)
-            if (data[COL.meals] === "Yes") addOns.push(esc(t.meals))
-
-            const addOnsText = addOns.length ? addOns.join(", ") : esc(t.noAddOns)
-            return `<li><strong>${esc(name)}</strong> — ${addOnsText}</li>`
+            if (bottleQty > 0) addOns.push(`${t.bottle} ×${bottleQty}`)
+            if (data[COL.meals] === "Yes") addOns.push(t.meals)
+            const addOnsText = addOns.length ? addOns.join(" · ") : t.noAddOns
+            return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.box};border:1px solid ${EMAIL.border};border-radius:4px;margin:0 0 10px;">` +
+                `<tr><td style="padding:14px 16px;"><strong>${esc(name)}</strong><br>` +
+                `<span style="color:${EMAIL.muted};font-size:14px;">${esc(addOnsText)}</span></td></tr></table>`
         })
         .join("")
 
-    const joinerLines = joiners
-        .map(({ data }) => `<li>${esc(`${data[COL.firstName]} ${data[COL.lastName]}`.trim())}</li>`)
-        .join("")
-
     const joinerSection = joiners.length
-        ? `<p><strong>${esc(t.tripTickets)} (${joiners.length}):</strong></p><ul>${joinerLines}</ul>`
+        ? `<p style="margin:6px 0 0;color:${EMAIL.muted};font-size:14px;"><strong style="color:${EMAIL.text};">${esc(t.tripTickets)} (${joiners.length}):</strong> ` +
+          `${esc(joiners.map(({ data }) => `${data[COL.firstName]} ${data[COL.lastName]}`.trim()).join(", "))}</p>`
         : ""
 
     const countWord = participants.length === 1 ? t.child : t.children
+    const location = first[COL.venue] || venueFromCamp(first[COL.camp])
+    const sportKey = String(metadata.sport || "").toLowerCase() ||
+        (String(first[COL.camp] || "").match(/\(([^)]*)\)/) || [])[1] || ""
+    const sportName = (t.sports && t.sports[String(sportKey).toLowerCase()]) || ""
+    const address = String(metadata.venueAddress || "").trim()
+    const venueHtml = address
+        ? `${esc(address)}<br><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}" style="color:${EMAIL.text};font-weight:bold;">${esc(t.map)}</a>`
+        : esc(location)
+
+    const rows = [
+        [t.reference, esc(first[COL.bookingReference])],
+        [t.camp, `<strong>${esc(location)}</strong>`],
+        ...(sportName ? [[t.sport, esc(sportName)]] : []),
+        [t.dates, esc(first[COL.campDateRange])],
+        [t.venue, venueHtml],
+        ...(first[COL.ageRange] ? [[t.ages, esc(first[COL.ageRange])]] : []),
+        ...(dropOffTime ? [[t.dropOff, esc(dropOffTime)]] : []),
+        ...(pickUpTime ? [[t.pickUp, esc(`${t.until} ${pickUpTime}`)]] : []),
+        [t.tickets, esc(`${participants.length} ${countWord}`)],
+        [t.total, `<strong>€${esc(orderTotal)}</strong>`],
+    ]
+    const detailsHtml = rows.map(([k, v], i) => emailRow(k, v, i === rows.length - 1)).join("")
 
     // ★ Google link inline; Apple/Outlook use the attached .ics.
     const calendarSection = calendarEvent
-        ? `
-        <p style="margin-top:22px;"><strong>${esc(t.addToCalendar)}</strong></p>
-        <p style="margin:6px 0;">
-            <a href="${esc(googleCalendarUrl(calendarEvent))}"
-               style="display:inline-block;padding:10px 18px;border:1px solid #E6E0D8;border-radius:999px;color:#12110F;text-decoration:none;font-weight:600;">
-                ${esc(t.googleCalendar)}
-            </a>
-        </p>
-        <p style="margin:6px 0;color:#6b7280;font-size:13px;">${esc(t.appleCalendar)}</p>
-    `
+        ? `<tr><td style="padding:28px 28px 0;">${emailLabel(t.addToCalendar)}
+<a href="${esc(googleCalendarUrl(calendarEvent))}" style="display:inline-block;padding:10px 18px;border:1px solid ${EMAIL.border};background:${EMAIL.box};border-radius:999px;color:${EMAIL.text};text-decoration:none;font-weight:bold;">${esc(t.googleCalendar)}</a>
+<p style="margin:8px 0 0;color:${EMAIL.muted};font-size:13px;">${esc(t.appleCalendar)}</p>
+</td></tr>`
         : ""
 
-    return `
-        <p>${esc(t.hi(first[COL.parentName] || ""))}</p>
-        <p>${esc(t.intro)}</p>
-        <table cellpadding="6" style="border-collapse:collapse;">
-            <tr><td><strong>${esc(t.reference)}</strong></td><td>${esc(first[COL.bookingReference])}</td></tr>
-            <tr><td><strong>${esc(t.camp)}</strong></td><td>${esc(first[COL.camp])}</td></tr>
-            <tr><td><strong>${esc(t.dates)}</strong></td><td>${esc(first[COL.campDateRange])}</td></tr>
-            <tr><td><strong>${esc(t.venue)}</strong></td><td>${esc(first[COL.venue])}</td></tr>
-            <tr><td><strong>${esc(t.ages)}</strong></td><td>${esc(first[COL.ageRange])}</td></tr>
-            <tr><td><strong>${esc(t.dropOff)}</strong></td><td>${esc(dropOffTime || "")}</td></tr>
-            <tr><td><strong>${esc(t.pickUp)}</strong></td><td>${esc(pickUpTime ? `${t.until} ${pickUpTime}` : "")}</td></tr>
-            <tr><td><strong>${esc(t.tickets)}</strong></td><td>${participants.length} ${esc(countWord)}</td></tr>
-            <tr><td><strong>${esc(t.total)}</strong></td><td>€${esc(orderTotal)}</td></tr>
-        </table>
-        <p><strong>${esc(t.perChild)}:</strong></p>
-        <ul>${childLines}</ul>
-        ${joinerSection}
-        ${calendarSection}
-        <p>${esc(t.outro)}</p>
-        <p style="margin-top:22px;">
-            ${esc(t.signOff)}<br>
-            <strong>${esc(t.team)}</strong>
-        </p>
-    `
+    const logo = EMAIL_ASSET_BASE
+        ? `<tr><td style="padding:28px 28px 0;"><img src="${esc(EMAIL_ASSET_BASE)}/email/se-logo.png" width="140" height="48" alt="Sports Evolution" style="display:block;border:0;width:140px;height:auto;"></td></tr>`
+        : ""
+
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin:0;padding:0;background:${EMAIL.page};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.page};"><tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:${EMAIL.card};border:1px solid ${EMAIL.border};border-radius:4px;font-family:${EMAIL.font};color:${EMAIL.text};font-size:15px;line-height:1.55;">
+${logo}
+<tr><td style="padding:24px 28px 0;">
+<p style="margin:0 0 14px;">${esc(t.hi(first[COL.parentName] || ""))}</p>
+<h1 style="margin:0 0 10px;font-family:${EMAIL.head};font-size:28px;line-height:1.2;font-weight:bold;letter-spacing:-0.01em;color:${EMAIL.text};">${esc(t.headline)}</h1>
+<p style="margin:0;color:${EMAIL.muted};">${esc(t.intro)}</p>
+</td></tr>
+<tr><td style="padding:28px 28px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.box};border:1px solid ${EMAIL.border};border-radius:4px;font-size:15px;">${detailsHtml}</table>
+</td></tr>
+<tr><td style="padding:28px 28px 0;">${emailLabel(t.perChild)}${childCards}${joinerSection}</td></tr>
+${calendarSection}
+<tr><td style="padding:24px 28px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.amberBg};border:1px solid ${EMAIL.amberBorder};border-radius:4px;"><tr><td style="padding:12px 16px;font-size:14px;color:${EMAIL.amberText};">
+<strong>${esc(t.goodToKnow)}:</strong> ${esc(t.comingNext)}
+</td></tr></table>
+</td></tr>
+<tr><td style="padding:24px 28px 28px;">
+<p style="margin:0 0 16px;">${esc(t.outro)}</p>
+<p style="margin:0;">${esc(t.signOff)}<br><strong>${esc(t.team)}</strong></p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`
 }
 
 async function sendEmail(to, subject, html, calendarEvent, options = {}) {
