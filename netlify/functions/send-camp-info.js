@@ -9,10 +9,11 @@
 //   - bookings made later (late joiners) get it within ~15 minutes of paying.
 // It is the ONLY place this email is sent, so a booking can never get two.
 //
-// Reads:  "Camps" tab (filled by stripe-webhook.js; you add the WhatsApp link)
+// Reads:  "Overview" tab (filled by register-camp.js and stripe-webhook.js;
+//         you add the WhatsApp link)
 //         "Bookings" tab A:AC
 // Writes: Bookings column AC "Info email sent" (timestamp), and missing camp
-//         rows in "Camps" for bookings made before this feature existed.
+//         rows in "Overview" for bookings made before this feature existed.
 //
 // Emails are only sent between 07:00 and 21:00 Luxembourg time.
 // No WhatsApp link yet → the email waits; info@ gets a daily reminder from
@@ -36,7 +37,7 @@ const SHEET_TAB = process.env.GOOGLE_SHEET_TAB || "Bookings"
 const BOOKINGS_RANGE = `${SHEET_TAB}!A:AC`
 const INFO_SENT_LETTER = "AC"
 
-const CAMPS_TAB = process.env.CAMPS_TAB || "Camps"
+const CAMPS_TAB = process.env.CAMPS_TAB || "Overview"
 const CAMPS_HEADER = [
     "Camp", "WhatsApp link", "Location", "Sport", "Start date",
     "End date", "Drop-off", "Pick-up", "Venue address", "Good to know",
@@ -177,10 +178,17 @@ async function infoColumnExists(sheets) {
 }
 
 async function readCamps(sheets) {
-    const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: process.env.GOOGLE_SHEET_ID,
-        range: `${quoteTab(CAMPS_TAB)}!A:J`,
-    })
+    let res
+    try {
+        res = await sheets.spreadsheets.values.get({
+            spreadsheetId: process.env.GOOGLE_SHEET_ID,
+            range: `${quoteTab(CAMPS_TAB)}!A:J`,
+        })
+    } catch (err) {
+        // Tab not created yet (no camp online so far).
+        if (/Unable to parse range/i.test(String(err && err.message))) return new Map()
+        throw err
+    }
     const rows = (res.data.values || []).slice(1)
     const byName = new Map()
     for (const r of rows) {
@@ -498,8 +506,6 @@ exports.handler = async () => {
             console.error(`[camp-info] column ${INFO_SENT_LETTER} ("Info email sent") is missing in "${SHEET_TAB}" — add it; nothing is sent until then`)
             return { statusCode: 200, body: "missing info column" }
         }
-        await ensureCampsTab(sheets)
-
         const bookingsRes = await sheets.spreadsheets.values.get({
             spreadsheetId: process.env.GOOGLE_SHEET_ID,
             range: BOOKINGS_RANGE,
@@ -526,6 +532,8 @@ exports.handler = async () => {
             const name = String(first[COL.camp] || "").trim()
             if (!name || camps.has(name) || toAdd.has(name)) continue
             if (!SENDABLE_STATUSES.includes(String(first[COL.status] || "").toLowerCase())) continue
+            const lastDay = toISODate(first[COL.endDate]) || toISODate(first[COL.startDate])
+            if (!lastDay || lastDay < now.date) continue // ended or unknown — nothing to send
             const row = new Array(CAMPS_HEADER.length).fill("")
             row[CAMP.name] = name
             row[CAMP.location] = first[COL.venue] || ""
@@ -535,6 +543,7 @@ exports.handler = async () => {
             toAdd.set(name, row)
         }
         if (toAdd.size && !DRY_RUN) {
+            await ensureCampsTab(sheets)
             await sheets.spreadsheets.values.append({
                 spreadsheetId: process.env.GOOGLE_SHEET_ID,
                 range: `${quoteTab(CAMPS_TAB)}!A:J`,
