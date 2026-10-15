@@ -220,7 +220,7 @@ async function handlePaid(session) {
         console.error(`[webhook] ${bookingId}: team alert failed:`, err.message)
     }
 
-    // ★ Adds this camp to the "Camps" tab (or refreshes its dates and times)
+    // ★ Adds this camp to the "Overview" tab (or refreshes its dates and times)
     // so you only have to paste the WhatsApp link. Never blocks the email.
     try {
         await upsertCampRow(sheets, matches[0].data[COL.camp], {
@@ -234,7 +234,7 @@ async function handlePaid(session) {
             goodToKnow: [metadata.goodToKnow1, metadata.goodToKnow2, metadata.goodToKnow3].filter(Boolean).join(""),
         })
     } catch (err) {
-        console.error(`[webhook] ${bookingId}: Camps tab update failed:`, err.message)
+        console.error(`[webhook] ${bookingId}: Overview tab update failed:`, err.message)
     }
 
     const buyerEmail =
@@ -273,11 +273,12 @@ async function handlePaid(session) {
     console.log(`[webhook] ${bookingId}: confirmation sent to ${buyerEmail} (${lang})`)
 }
 
-/* ---------------- Camps tab ---------------- */
+/* ---------------- Overview tab (camp list) ---------------- */
 
-// One row per camp. The code fills every column except B (WhatsApp link),
-// which is yours. send-camp-info.js reads this tab.
-const CAMPS_TAB = process.env.CAMPS_TAB || "Camps"
+// "Overview" tab: one row per camp. The code fills every column except B
+// (WhatsApp link), which is yours. send-camp-info.js reads this tab;
+// register-camp.js adds camps as soon as their page is online.
+const CAMPS_TAB = process.env.CAMPS_TAB || "Overview"
 const CAMPS_HEADER = [
     "Camp", "WhatsApp link", "Location", "Sport", "Start date",
     "End date", "Drop-off", "Pick-up", "Venue address", "Good to know",
@@ -321,6 +322,10 @@ async function ensureCampsTab(sheets) {
 async function upsertCampRow(sheets, campKey, info) {
     const key = String(campKey || "").trim()
     if (!key) return
+    // An ended camp is removed from the tab by update-overview — don't re-add.
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Luxembourg", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
+    const lastDay = String(info.end || info.start || "")
+    if (/^\d{4}-\d{2}-\d{2}$/.test(lastDay) && lastDay < today) return
     const spreadsheetId = process.env.GOOGLE_SHEET_ID
     await ensureCampsTab(sheets)
     const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${quoteTab(CAMPS_TAB)}!A:J` })
