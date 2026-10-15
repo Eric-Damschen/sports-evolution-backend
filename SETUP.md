@@ -13,9 +13,9 @@ netlify/functions/
     cleanup-abandoned.js
     check-discount.js
     send-camp-info.js
+    update-overview.js
 email/
-    se-logo.png      (logos used in the camp-info email)
-    se-mark.png
+    se-logo.png      (logo in the confirmation and camp-info emails)
 ```
 
 Every function is self-contained. **Delete `netlify/lib/` and `public/` from the
@@ -118,8 +118,21 @@ invite link (`https://chat.whatsapp.com/…`) in column B.** Without a valid lin
 the email waits, and info@ gets a reminder at 08:00 each day from 10 days
 before the camp.
 
-Venue address: add the optional **Venue address** field on each camp page in
-Framer (bind it to a CMS field). Without it, the email shows the town only.
+Venue address and "What to bring": on each camp page in Framer, bind the
+booking form's optional **Venue address** and **Good to know** fields to the
+CMS. "What to bring" shows the Good to know text word for word; empty = the
+section is left out. Without an address, the email shows the town only.
+
+## Overview and year tabs
+
+`update-overview` runs every 15 minutes, only reads the Bookings tab and
+rewrites these tabs when something changed (don't type in them):
+
+- **Overview** — upcoming and running camps: Camp | Participants | Joiners (trip) | Revenue. A camp disappears the day after its last day.
+- **2026, 2027, …** — created automatically, one per year (year of the first camp day). One row per camp that has ended: sport, dates, participants, joiners, revenue, clothing sets and sizes, bottles, lunches, discount codes, how families heard about us, refunded bookings, plus a total row.
+
+Counted: "paid" and "partially refunded". Revenue = column P; partial refunds
+are not subtracted. Dates come from the Camps tab (or columns X/Y).
 
 ## Cleanup job
 
