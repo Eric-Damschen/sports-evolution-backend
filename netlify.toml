@@ -39,3 +39,9 @@
 # to trigger it by hand.
 [functions."cleanup-abandoned"]
   schedule = "*/15 * * * *"
+
+# Sends the camp-info email (WhatsApp link, venue, times) to every paid
+# booking once its camp is 7 days away or less — late joiners within 15
+# minutes of paying. Only between 07:00 and 21:00 Luxembourg time.
+[functions."send-camp-info"]
+  schedule = "*/15 * * * *"
