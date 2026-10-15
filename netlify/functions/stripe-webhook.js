@@ -819,8 +819,11 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
         (String(first[COL.camp] || "").match(/\(([^)]*)\)/) || [])[1] || ""
     const sportName = (t.sports && t.sports[String(sportKey).toLowerCase()]) || ""
     const address = String(metadata.venueAddress || "").trim()
-    const venueHtml = address
-        ? `${esc(address)}<br><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}" style="color:${EMAIL.text};font-weight:bold;">${esc(t.map)}</a>`
+    // Paragraph field: one line per address line; the map search gets them
+    // joined with commas.
+    const addressLines = address.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    const venueHtml = addressLines.length
+        ? `${addressLines.map(esc).join("<br>")}<br><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addressLines.join(", "))}" style="color:${EMAIL.text};font-weight:bold;">${esc(t.map)}</a>`
         : esc(location)
 
     const rows = [
