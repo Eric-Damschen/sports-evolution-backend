@@ -33,6 +33,11 @@
   to = "/.netlify/functions/check-discount"
   status = 200
 
+[[redirects]]
+  from = "/api/register-camp"
+  to = "/.netlify/functions/register-camp"
+  status = 200
+
 # Removes rows for checkouts that were never paid. Runs every 15 minutes and
 # waits while anyone is mid-checkout. Scheduled functions only run on the
 # published production deploy — use "Run now" in the Netlify Functions tab
@@ -44,4 +49,9 @@
 # booking once its camp is 7 days away or less — late joiners within 15
 # minutes of paying. Only between 07:00 and 21:00 Luxembourg time.
 [functions."send-camp-info"]
+  schedule = "*/15 * * * *"
+
+# Removes ended camps from the "Overview" tab and keeps the year tabs
+# ("2026", …) up to date. Only reads the Bookings tab.
+[functions."update-overview"]
   schedule = "*/15 * * * *"
