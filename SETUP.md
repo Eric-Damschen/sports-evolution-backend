@@ -14,6 +14,7 @@ netlify/functions/
     check-discount.js
     send-camp-info.js
     update-overview.js
+    register-camp.js
 email/
     se-logo.png      (logo in the confirmation and camp-info emails)
 ```
@@ -44,6 +45,7 @@ Optional:
 | Variable | Default | |
 |---|---|---|
 | `RESEND_BCC` | — | a copy of every confirmation email to you |
+| `ALLOWED_ORIGINS` | `https://www.sportsevolution.lu,https://sportsevolution.lu` | websites allowed to report camps to `register-camp` |
 | `CAMP_INFO_DRY_RUN` | — | `true` = the camp-info job only logs what it would send |
 | `ADMIN_NOTIFY_EMAIL` | `info@sportsevolution.lu` | short "new booking" alert after each successful payment (comma-separate several addresses) |
 | `RESEND_REPLY_TO` | — | where parents' replies go |
@@ -111,28 +113,36 @@ with the WhatsApp link, venue, times, children and what to bring:
 - only between 07:00 and 21:00 Luxembourg time; nothing once the camp has started;
 - in the booking language; the timestamp in column AC makes it one email per booking.
 
-**"Camps" tab** — created automatically. The payment webhook adds each camp at
-its first paid booking and keeps location, sport, dates, drop-off, pick-up and
-venue address up to date from the booking form. **You only paste the WhatsApp
-invite link (`https://chat.whatsapp.com/…`) in column B.** Without a valid link
-the email waits, and info@ gets a reminder at 08:00 each day from 10 days
-before the camp.
+**"Overview" tab (camp list)** — created automatically as soon as the first
+camp page is opened on the live website. Each camp page's booking form reports
+its camp (`register-camp`), so every online camp gets a row with location,
+sport, dates, drop-off, pick-up, venue address and Good to know, refreshed
+whenever you change them in Framer. **You only paste the WhatsApp invite link
+(`https://chat.whatsapp.com/…`) in column B** — the code never writes there.
+After publishing a new camp, open its page once and the row appears.
+Rows of camps that have ended are removed the day after their last day.
+Without a valid link the camp-info email waits, and info@ gets a reminder at
+08:00 each day from 10 days before the camp.
 
 Venue address and "What to bring": on each camp page in Framer, bind the
-booking form's optional **Venue address** and **Good to know** fields to the
-CMS. "What to bring" shows the Good to know text word for word; empty = the
-section is left out. Without an address, the email shows the town only.
+booking form's **Venue address** and **Good to know** paragraph fields to
+Plain Text CMS fields. "What to bring" shows the Good to know text word for
+word; empty = the section is left out. Without an address, the email shows the
+town only.
 
-## Overview and year tabs
+## Year tabs
 
-`update-overview` runs every 15 minutes, only reads the Bookings tab and
-rewrites these tabs when something changed (don't type in them):
-
-- **Overview** — upcoming and running camps: Camp | Participants | Joiners (trip) | Revenue. A camp disappears the day after its last day.
-- **2026, 2027, …** — created automatically, one per year (year of the first camp day). One row per camp that has ended: sport, dates, participants, joiners, revenue, clothing sets and sizes, bottles, lunches, discount codes, how families heard about us, refunded bookings, plus a total row.
+`update-overview` runs every 15 minutes and only reads the Bookings tab.
+**2026, 2027, …** — a year's tab is created at the first purchase for a camp
+of that year (year of the first camp day) and rewritten whenever something
+changes (don't type in it). One row per camp of that year — upcoming, running
+and finished — with status, participants, joiners, revenue, clothing sets and
+sizes, bottles, lunches, discount codes, how families heard about us and
+refunded bookings, plus a total row. Finished camps without any booking are
+left out.
 
 Counted: "paid" and "partially refunded". Revenue = column P; partial refunds
-are not subtracted. Dates come from the Camps tab (or columns X/Y).
+are not subtracted.
 
 ## Cleanup job
 
