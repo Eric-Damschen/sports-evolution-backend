@@ -1,16 +1,18 @@
 // netlify/functions/update-overview.js
 //
 // Self-contained on purpose: no shared module to misplace.
-// Runs on a schedule (see netlify.toml, every 15 minutes) and keeps two kinds
-// of summary tabs up to date. It only READS the Bookings tab.
+// Runs on a schedule (see netlify.toml, every 15 minutes). It only READS the
+// Bookings tab.
 //
-//   "Overview"  one row per upcoming or running camp:
-//               Camp | Participants | Joiners (trip) | Revenue
-//               A camp disappears the day after it ends.
+//   "Overview"  (the camp list, filled by register-camp.js and the webhook)
+//               rows of camps that have ended are removed the day after their
+//               last day; duplicate rows of the same camp are merged.
 //
-//   "2026", "2027", …  one tab per year, one row per camp that has ended,
-//               with participants, joiners, revenue, add-ons, discount codes,
-//               how families heard about us and refunds, plus a total row.
+//   "2026", "2027", …  one tab per year, created at the first purchase for a
+//               camp of that year. One row per camp of the year (upcoming,
+//               running and finished) with status, participants, joiners,
+//               revenue, add-ons, discount codes, how families heard about us
+//               and refunds, plus a total row. Kept up to date all year.
 //
 // Counted: bookings with status "paid" or "partially refunded".
 // Revenue = column P (what each person paid); partial refunds are not
@@ -25,16 +27,14 @@ const COL = {
     startDate: 23, endDate: 24, discountCode: 26, referral: 27,
 }
 const SHEET_TAB = process.env.GOOGLE_SHEET_TAB || "Bookings"
-const CAMPS_TAB = process.env.CAMPS_TAB || "Camps"
-const OVERVIEW_TAB = process.env.OVERVIEW_TAB || "Overview"
-const CAMP = { name: 0, location: 2, sport: 3, start: 4, end: 5 }
+const CAMPS_TAB = process.env.CAMPS_TAB || "Overview"
+const CAMP = { name: 0, link: 1, location: 2, sport: 3, start: 4, end: 5 }
 
 const COUNTED = ["paid", "partially refunded"]
 const ROLE_JOINER = "Joiner"
 
-const OVERVIEW_HEADER = ["Camp", "Participants", "Joiners (trip)", "Revenue"]
 const YEAR_HEADER = [
-    "Camp", "Sport", "Start date", "End date", "Participants", "Joiners (trip)",
+    "Camp", "Sport", "Start date", "End date", "Status", "Participants", "Joiners (trip)",
     "Revenue", "Clothing sets", "Clothing sizes", "Drinking bottles", "Lunches",
     "Discount codes", "Heard about us", "Refunded bookings",
 ]
@@ -246,10 +246,12 @@ function summarise(bookingRows, campRows) {
         }
     }
 
-    // The Camps tab (kept up to date by the webhook) wins for dates & names.
+    // The Overview tab (kept up to date from the website) wins for dates and
+    // names, and adds camps that have no booking yet.
     for (const row of campRows) {
-        const c = camps.get(String(row[CAMP.name] || "").trim())
-        if (!c) continue
+        const name = String(row[CAMP.name] || "").trim()
+        if (!name) continue
+        const c = get(name)
         c.start = toISODate(row[CAMP.start]) || c.start
         c.end = toISODate(row[CAMP.end]) || c.end
         c.location = String(row[CAMP.location] || "").trim() || c.location
@@ -269,63 +271,96 @@ function byDateThenName(a, b) {
 
 /* ---------------- Main ---------------- */
 
+// Removes rows of ended camps and duplicate rows from the Overview tab.
+// Duplicates (two page loads at the same moment) keep the row with a link.
+async function tidyCampList(sheets, sheetId, campRows, today) {
+    if (sheetId === undefined) return 0
+    const remove = []
+    const kept = new Map() // name → index of kept row
+    campRows.forEach((row, i) => {
+        const name = String(row[CAMP.name] || "").trim()
+        if (!name) return
+        const last = toISODate(row[CAMP.end]) || toISODate(row[CAMP.start])
+        if (last && last < today) { remove.push(i); return }
+        if (!kept.has(name)) { kept.set(name, i); return }
+        const j = kept.get(name)
+        const hasLink = (r) => String(r[CAMP.link] || "").trim() !== ""
+        if (!hasLink(campRows[j]) && hasLink(row)) { remove.push(j); kept.set(name, i) } else remove.push(i)
+    })
+    if (!remove.length) return 0
+    // campRows excludes the header: data row i is sheet row i + 1 (0-based).
+    const requests = [...new Set(remove)]
+        .sort((x, y) => y - x)
+        .map((i) => ({ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: i + 1, endIndex: i + 2 } } }))
+    await sheets.spreadsheets.batchUpdate({ spreadsheetId: process.env.GOOGLE_SHEET_ID, requestBody: { requests } })
+    return requests.length
+}
+
 exports.handler = async () => {
     try {
         const sheets = await getSheets()
         const today = luxToday()
 
-        const bookings = ((await readRange(sheets, `${quoteTab(SHEET_TAB)}!A:AB`, true)) || []).slice(1)
-        const campRows = ((await readRange(sheets, `${quoteTab(CAMPS_TAB)}!A:F`, false)) || []).slice(1)
-        const camps = summarise(bookings, campRows)
-
         const meta = await sheets.spreadsheets.get({
             spreadsheetId: process.env.GOOGLE_SHEET_ID,
-            fields: "sheets.properties.title",
+            fields: "sheets.properties(sheetId,title)",
         })
-        const titles = new Set((meta.data.sheets || []).map((t) => t.properties.title))
+        const tabs = (meta.data.sheets || []).map((t) => t.properties)
+        const titles = new Set(tabs.map((t) => t.title))
+        const campsTab = tabs.find((t) => t.title === CAMPS_TAB)
 
-        // A camp has ended once the day after its last day has begun.
-        const ended = (c) => {
-            const last = c.end || c.start
-            return !!last && last < today
+        const bookings = ((await readRange(sheets, `${quoteTab(SHEET_TAB)}!A:AB`, true)) || []).slice(1)
+        let campRows = campsTab ? ((await readRange(sheets, `${quoteTab(CAMPS_TAB)}!A:F`, false)) || []).slice(1) : []
+
+        const removed = await tidyCampList(sheets, campsTab && campsTab.sheetId, campRows, today)
+        if (removed) {
+            campRows = ((await readRange(sheets, `${quoteTab(CAMPS_TAB)}!A:F`, false)) || []).slice(1)
+            console.log(`[overview] removed ${removed} ended or duplicate camp row(s) from "${CAMPS_TAB}"`)
         }
 
-        // Overview: upcoming and running camps with at least one counted booking.
-        const upcoming = camps.filter((c) => c.counted.size > 0 && !ended(c)).sort(byDateThenName)
-        await ensureTab(sheets, titles, OVERVIEW_TAB, OVERVIEW_HEADER, 3)
-        const overviewChanged = await writeTable(
-            sheets, OVERVIEW_TAB, OVERVIEW_HEADER,
-            upcoming.map((c) => [c.name, c.participants, c.joiners || "", c.revenue])
-        )
+        const camps = summarise(bookings, campRows)
 
-        // One tab per year (year of the first camp day) for camps that ended.
+        const statusOf = (c) => {
+            const last = c.end || c.start
+            if (last && last < today) return "Finished"
+            if (c.start && c.start <= today) return "Running"
+            return "Upcoming"
+        }
+
+        // Year of the first camp day; a year tab exists once that year has a purchase.
         const byYear = new Map()
         for (const c of camps) {
-            if (!ended(c) || (c.counted.size === 0 && c.refunded.size === 0)) continue
             const year = (c.start || c.end).slice(0, 4)
+            if (!year) continue
             if (!byYear.has(year)) byYear.set(year, [])
             byYear.get(year).push(c)
         }
         const yearsChanged = []
-        for (const [year, list] of [...byYear].sort((a, b) => a[0].localeCompare(b[0]))) {
-            list.sort(byDateThenName)
+        const yearsShown = []
+        for (const [year, all] of [...byYear].sort((a, b) => a[0].localeCompare(b[0]))) {
+            if (!all.some((c) => c.counted.size > 0)) continue // no purchase that year yet
+            // Finished camps without any booking are left out; upcoming ones stay.
+            const list = all
+                .filter((c) => c.counted.size > 0 || c.refunded.size > 0 || statusOf(c) !== "Finished")
+                .sort(byDateThenName)
             const rows = list.map((c) => [
-                c.location, SPORTS[c.sport] || c.sport, displayDate(c.start), displayDate(c.end),
+                c.location, SPORTS[c.sport] || c.sport, displayDate(c.start), displayDate(c.end), statusOf(c),
                 c.participants, c.joiners, c.revenue, c.clothing, tally(c.sizes),
                 c.bottles, c.lunches, tally(c.codes), tally(c.heard), c.refunded.size,
             ])
             const sum = (i) => rows.reduce((s, r) => s + (Number(r[i]) || 0), 0)
             rows.push([
-                "Total", "", "", "", sum(4), sum(5), money(sum(6)), sum(7), "",
-                sum(9), sum(10), "", "", sum(13),
+                "Total", "", "", "", "", sum(5), sum(6), money(sum(7)), sum(8), "",
+                sum(10), sum(11), "", "", sum(14),
             ])
-            await ensureTab(sheets, titles, year, YEAR_HEADER, 6)
+            await ensureTab(sheets, titles, year, YEAR_HEADER, 7)
             if (await writeTable(sheets, year, YEAR_HEADER, rows)) yearsChanged.push(year)
+            yearsShown.push(year)
         }
 
         console.log(
-            `[overview] ${upcoming.length} upcoming camp(s)${overviewChanged ? " — Overview updated" : ""}; ` +
-            `year tabs: ${[...byYear.keys()].join(", ") || "none"}${yearsChanged.length ? ` (updated ${yearsChanged.join(", ")})` : ""}`
+            `[overview] year tabs: ${yearsShown.join(", ") || "none yet"}` +
+            `${yearsChanged.length ? ` (updated ${yearsChanged.join(", ")})` : ""}`
         )
         return { statusCode: 200, body: "ok" }
     } catch (err) {
