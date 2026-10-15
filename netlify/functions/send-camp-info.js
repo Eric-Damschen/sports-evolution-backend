@@ -360,8 +360,11 @@ function buildEmail({ t, parentName, campRow, link, startISO, endISO, participan
     const dropOff = String(campRow[CAMP.dropOff] || "").trim()
     const pickUp = String(campRow[CAMP.pickUp] || "").trim()
 
-    const venueHtml = address
-        ? `${esc(address)}<br><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}" style="color:${C.text};font-weight:bold;">${esc(t.map)}</a>`
+    // Paragraph field: one line per address line; the map search gets them
+    // joined with commas.
+    const addressLines = address.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    const venueHtml = addressLines.length
+        ? `${addressLines.map(esc).join("<br>")}<br><a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addressLines.join(", "))}" style="color:${C.text};font-weight:bold;">${esc(t.map)}</a>`
         : esc(location)
 
     const rows = [
