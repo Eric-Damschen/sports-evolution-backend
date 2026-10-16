@@ -38,6 +38,13 @@
   to = "/.netlify/functions/register-camp"
   status = 200
 
+# Sends one test confirmation + camp-info email to info@ (only when
+# TEST_EMAIL_KEY is set in Netlify and the link carries that key).
+[[redirects]]
+  from = "/api/send-test-emails"
+  to = "/.netlify/functions/send-test-emails"
+  status = 200
+
 # Removes rows for checkouts that were never paid. Runs every 15 minutes and
 # waits while anyone is mid-checkout. Scheduled functions only run on the
 # published production deploy — use "Run now" in the Netlify Functions tab
