@@ -15,6 +15,7 @@ netlify/functions/
     send-camp-info.js
     update-overview.js
     register-camp.js
+    send-test-emails.js
 email/
     se-logo-long.png (logo at the bottom of the confirmation and camp-info emails)
 ```
@@ -46,6 +47,7 @@ Optional:
 |---|---|---|
 | `RESEND_BCC` | — | a copy of every confirmation email to you |
 | `EMAIL_LOGO_FILE` | `email/se-logo-long.png` | path of the email logo in this repo, if yours has another name |
+| `TEST_EMAIL_KEY` | — | any word; switches on `/api/send-test-emails?key=…` (sends both emails to info@). Remove it afterwards |
 | `ALLOWED_ORIGINS` | `https://www.sportsevolution.lu,https://sportsevolution.lu` | websites allowed to report camps to `register-camp` |
 | `CAMP_INFO_DRY_RUN` | — | `true` = the camp-info job only logs what it would send |
 | `ADMIN_NOTIFY_EMAIL` | `info@sportsevolution.lu` | short "new booking" alert after each successful payment (comma-separate several addresses) |
@@ -115,21 +117,41 @@ with the WhatsApp link, venue, times, children and what to bring:
 - in the booking language; the timestamp in column AC makes it one email per booking.
 
 **"Overview" tab (camp list)** — created automatically as soon as the first
-camp page is opened on the live website. Each camp page's booking form reports
-its camp (`register-camp`), so every online camp gets a row with location,
-sport, dates, drop-off, pick-up, venue address and Good to know, refreshed
-whenever you change them in Framer. **You only paste the WhatsApp invite link
-(`https://chat.whatsapp.com/…`) in column B** — the code never writes there.
-After publishing a new camp, open its page once and the row appears.
-Rows of camps that have ended are removed the day after their last day.
+camp page is opened on the live website. Columns: Camp | WhatsApp link |
+Location | Sport | Start date | End date | Participants | Revenue.
+Each camp page's booking form reports its camp (`register-camp`), so every
+online camp gets a row, refreshed whenever you change it in Framer.
+**You only paste the WhatsApp invite link (`https://chat.whatsapp.com/…`) in
+column B** — the code never writes there. Participants (children, paid and
+partially refunded) and Revenue (column P) update right after each payment
+and are rechecked every 15 minutes (refunds included). Rows of camps that have
+ended are removed the day after their last day.
+
+**"Camp details" tab (hidden)** — drop-off, pick-up, venue address and Good to
+know per camp, used by the camp-info email. Filled by the code; leave it as is.
+
 Without a valid link the camp-info email waits, and info@ gets a reminder at
 08:00 each day from 10 days before the camp.
 
-Venue address and "What to bring": on each camp page in Framer, bind the
-booking form's **Venue address** and **Good to know** paragraph fields to
-Plain Text CMS fields. "What to bring" shows the Good to know text word for
-word; empty = the section is left out. Without an address, the email shows the
-town only.
+Venue address and "What to bring": both are rich text in the Framer CMS,
+which code components can't receive. `register-camp` therefore reads them from
+the published camp page: the rich text right after the **Address** label and
+the **Good to know** heading (keep those two labels on the camp template).
+Line breaks are kept. "What to bring" shows the Good to know text word for
+word. If the form's own Venue address / Good to know fields are filled, those
+win.
+
+Camp start date: if the booking form's **Camp start date** isn't connected, the
+form uses the day and month shown on the page (this year, or next year once
+this year's camp is over). The camp's name — and so the place counting — stays
+as it was.
+
+## Test emails
+
+Set `TEST_EMAIL_KEY` in Netlify (any word), redeploy, then open
+`https://<your-site>.netlify.app/api/send-test-emails?key=<that word>`.
+One test confirmation and one test camp-info email go to info@ (no WhatsApp
+link, sample family, real camp details). Remove the variable afterwards.
 
 ## Year tabs
 
