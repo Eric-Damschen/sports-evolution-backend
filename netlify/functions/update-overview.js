@@ -5,8 +5,9 @@
 // Bookings tab.
 //
 //   "Overview"  (the camp list, filled by register-camp.js and the webhook)
-//               rows of camps that have ended are removed the day after their
-//               last day; duplicate rows of the same camp are merged.
+//               Participants and Revenue are recalculated here; rows of camps
+//               that have ended are removed the day after their last day;
+//               duplicate rows of the same camp are merged.
 //
 //   "2026", "2027", …  one tab per year, created at the first purchase for a
 //               camp of that year. One row per camp of the year (upcoming,
@@ -27,7 +28,6 @@ const COL = {
     startDate: 23, endDate: 24, discountCode: 26, referral: 27,
 }
 const SHEET_TAB = process.env.GOOGLE_SHEET_TAB || "Bookings"
-const CAMPS_TAB = process.env.CAMPS_TAB || "Overview"
 const CAMP = { name: 0, link: 1, location: 2, sport: 3, start: 4, end: 5 }
 
 const COUNTED = ["paid", "partially refunded"]
@@ -195,6 +195,258 @@ async function writeTable(sheets, title, header, rows) {
     return true
 }
 
+/* ---------- Camp list: "Overview" tab + hidden "Camp details" tab ----------
+ * Same block in register-camp.js, stripe-webhook.js, send-camp-info.js and
+ * update-overview.js (each function is self-contained on purpose).
+ *
+ * "Overview" (visible):  Camp | WhatsApp link | Location | Sport |
+ *                        Start date | End date | Participants | Revenue
+ *   B (WhatsApp link) is yours — the code never writes it.
+ *   G/H are recalculated from the Bookings tab (paid + partially refunded).
+ * "Camp details" (hidden): Camp | Drop-off | Pick-up | Venue address | Good to know
+ *   used by the camp-info email; kept up to date from the website.
+ */
+const CAMPS_TAB = process.env.CAMPS_TAB || "Overview"
+const DETAILS_TAB = process.env.CAMP_DETAILS_TAB || "Camp details"
+const CAMPS_HEADER = ["Camp", "WhatsApp link", "Location", "Sport", "Start date", "End date", "Participants", "Revenue"]
+const DETAILS_HEADER = ["Camp", "Drop-off", "Pick-up", "Venue address", "Good to know"]
+const CAMP_LIST_COLS = { location: 2, sport: 3, start: 4, end: 5 }
+const CAMP_DETAIL_COLS = { dropOff: 1, pickUp: 2, address: 3, goodToKnow: 4 }
+const STATS_COLS = { participants: 6, revenue: 7 }
+
+function campTabRange(tab, range) {
+    return `'${String(tab).replace(/'/g, "''")}'!${range}`
+}
+
+function campColLetter(i) {
+    return String.fromCharCode(65 + i)
+}
+
+function luxTodayISO() {
+    return new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Luxembourg", year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(new Date())
+}
+
+// Creates the two tabs when missing (create = true) and upgrades an older
+// Overview layout (with drop-off/pick-up/address/good-to-know in G–J).
+async function ensureCampTabs(sheets, create = true) {
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties(sheetId,title)" })
+    const tabs = (meta.data.sheets || []).map((t) => t.properties)
+    let overview = tabs.find((t) => t.title === CAMPS_TAB)
+    const details = tabs.find((t) => t.title === DETAILS_TAB)
+    if (!overview && !create) return false
+
+    const addTab = async (title, hidden) => {
+        try {
+            const res = await sheets.spreadsheets.batchUpdate({
+                spreadsheetId,
+                requestBody: { requests: [{ addSheet: { properties: { title, hidden, gridProperties: { frozenRowCount: 1 } } } }] },
+            })
+            return res.data.replies[0].addSheet.properties.sheetId
+        } catch (err) {
+            if (/already exists/i.test(String(err && err.message))) return null
+            throw err
+        }
+    }
+    const formatOverview = async (sheetId) => {
+        if (sheetId === null || sheetId === undefined) return
+        await sheets.spreadsheets.batchUpdate({
+            spreadsheetId,
+            requestBody: {
+                requests: [
+                    {
+                        repeatCell: {
+                            range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: CAMPS_HEADER.length },
+                            cell: { userEnteredFormat: { textFormat: { bold: true } } },
+                            fields: "userEnteredFormat.textFormat.bold",
+                        },
+                    },
+                    {
+                        repeatCell: {
+                            range: { sheetId, startRowIndex: 1, startColumnIndex: STATS_COLS.revenue, endColumnIndex: STATS_COLS.revenue + 1 },
+                            cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "[$€]#,##0.00" } } },
+                            fields: "userEnteredFormat.numberFormat",
+                        },
+                    },
+                ],
+            },
+        })
+    }
+    const writeHeader = (tab, header) =>
+        sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: campTabRange(tab, `A1:${campColLetter(header.length - 1)}1`),
+            valueInputOption: "RAW",
+            requestBody: { values: [header] },
+        })
+
+    if (!overview) {
+        const id = await addTab(CAMPS_TAB, false)
+        await writeHeader(CAMPS_TAB, CAMPS_HEADER)
+        await formatOverview(id)
+    } else {
+        const head = await sheets.spreadsheets.values.get({ spreadsheetId, range: campTabRange(CAMPS_TAB, "A1:J1") })
+        const current = ((head.data.values || [])[0] || []).map((v) => String(v || "").trim())
+        if (current.join("|") !== CAMPS_HEADER.join("|")) {
+            // Older layout: G–J held times, address and Good to know. Those now
+            // live in the hidden tab and come back from the website.
+            await sheets.spreadsheets.values.clear({ spreadsheetId, range: campTabRange(CAMPS_TAB, "G1:J") })
+            await writeHeader(CAMPS_TAB, CAMPS_HEADER)
+            await formatOverview(overview.sheetId)
+            console.log(`[camps] upgraded the "${CAMPS_TAB}" tab to the new columns`)
+        }
+    }
+    if (!details) {
+        await addTab(DETAILS_TAB, true)
+        await writeHeader(DETAILS_TAB, DETAILS_HEADER)
+    }
+    return true
+}
+
+// Adds the camp or refreshes it. Only non-empty values that changed are
+// written. Never writes the WhatsApp link or the Participants/Revenue columns.
+async function upsertCamp(sheets, campKey, info) {
+    const key = String(campKey || "").trim()
+    if (!key) return
+    const lastDay = String(info.end || info.start || "")
+    if (/^\d{4}-\d{2}-\d{2}$/.test(lastDay) && lastDay < luxTodayISO()) return // ended
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    await ensureCampTabs(sheets, true)
+
+    const upsert = async (tab, width, cols, newRow) => {
+        const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: campTabRange(tab, `A:${campColLetter(width - 1)}`) })
+        const rows = res.data.values || []
+        const idx = rows.findIndex((r, i) => i > 0 && String(r[0] || "").trim() === key)
+        if (idx === -1) {
+            const row = newRow()
+            for (const [field, col] of Object.entries(cols)) row[col] = String(info[field] || "")
+            await sheets.spreadsheets.values.append({
+                spreadsheetId,
+                range: campTabRange(tab, `A:${campColLetter(width - 1)}`),
+                valueInputOption: "RAW",
+                insertDataOption: "INSERT_ROWS",
+                requestBody: { values: [row] },
+            })
+            return "added"
+        }
+        const current = rows[idx]
+        const data = []
+        for (const [field, col] of Object.entries(cols)) {
+            const value = String(info[field] || "")
+            if (value && value !== String(current[col] || "")) {
+                data.push({ range: campTabRange(tab, `${campColLetter(col)}${idx + 1}`), values: [[value]] })
+            }
+        }
+        if (data.length) {
+            await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "RAW", data } })
+        }
+        return data.length ? "updated" : "unchanged"
+    }
+
+    const listResult = await upsert(CAMPS_TAB, CAMPS_HEADER.length, CAMP_LIST_COLS, () => {
+        const row = new Array(CAMPS_HEADER.length).fill("")
+        row[0] = key
+        row[STATS_COLS.participants] = 0
+        row[STATS_COLS.revenue] = 0
+        return row
+    })
+    await upsert(DETAILS_TAB, DETAILS_HEADER.length, CAMP_DETAIL_COLS, () => {
+        const row = new Array(DETAILS_HEADER.length).fill("")
+        row[0] = key
+        return row
+    })
+    return listResult
+}
+
+// Participants (children) and revenue (column P) per camp, from the Bookings
+// rows. Counted: "paid" and "partially refunded".
+function campStatsFromBookings(bookingRows) {
+    const stats = new Map()
+    for (const r of bookingRows) {
+        const name = String(r[2] || "").trim() // C = camp
+        if (!name || !r[0]) continue
+        const status = String(r[16] || "").trim().toLowerCase() // Q = status
+        if (status !== "paid" && status !== "partially refunded") continue
+        const s = stats.get(name) || { participants: 0, revenue: 0 }
+        if (r[18] !== "Joiner") s.participants += 1 // S = role
+        const p = Number(String(r[15] === undefined || r[15] === null ? "" : r[15]).replace(",", ".")) // P = price
+        if (isFinite(p)) s.revenue += p
+        stats.set(name, s)
+    }
+    for (const s of stats.values()) s.revenue = Math.round(s.revenue * 100) / 100
+    return stats
+}
+
+// Writes Participants/Revenue into the Overview rows whose numbers changed.
+async function writeCampStats(sheets, stats) {
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    let res
+    try {
+        res = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: campTabRange(CAMPS_TAB, "A:H"),
+            valueRenderOption: "UNFORMATTED_VALUE",
+        })
+    } catch (err) {
+        if (/Unable to parse range/i.test(String(err && err.message))) return 0 // no Overview yet
+        throw err
+    }
+    const rows = res.data.values || []
+    const data = []
+    rows.forEach((r, i) => {
+        if (i === 0) return
+        const name = String(r[0] || "").trim()
+        if (!name) return
+        const s = stats.get(name) || { participants: 0, revenue: 0 }
+        const curP = r[STATS_COLS.participants], curR = r[STATS_COLS.revenue]
+        if (String(curP) !== String(s.participants) || String(curR) !== String(s.revenue)) {
+            data.push({
+                range: campTabRange(CAMPS_TAB, `${campColLetter(STATS_COLS.participants)}${i + 1}:${campColLetter(STATS_COLS.revenue)}${i + 1}`),
+                values: [[s.participants, s.revenue]],
+            })
+        }
+    })
+    if (data.length) {
+        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "RAW", data } })
+    }
+    return data.length
+}
+
+// Overview rows merged with their hidden details, by camp name:
+// [name, link, location, sport, start, end, dropOff, pickUp, address, goodToKnow]
+async function readCampList(sheets) {
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    const get = async (range) => {
+        try {
+            const res = await sheets.spreadsheets.values.get({ spreadsheetId, range })
+            return (res.data.values || []).slice(1)
+        } catch (err) {
+            if (/Unable to parse range/i.test(String(err && err.message))) return []
+            throw err
+        }
+    }
+    const list = await get(campTabRange(CAMPS_TAB, "A:F"))
+    const details = await get(campTabRange(DETAILS_TAB, "A:E"))
+    const detailByName = new Map()
+    for (const d of details) {
+        const name = String(d[0] || "").trim()
+        if (name && !detailByName.has(name)) detailByName.set(name, d)
+    }
+    return list.map((r) => {
+        const d = detailByName.get(String(r[0] || "").trim()) || []
+        const row = []
+        for (let i = 0; i < 6; i++) row[i] = r[i] === undefined ? "" : r[i]
+        row[6] = d[1] || ""
+        row[7] = d[2] || ""
+        row[8] = d[3] || ""
+        row[9] = d[4] || ""
+        return row
+    })
+}
+/* ---------- end of camp list block ---------- */
+
 /* ---------------- Summaries ---------------- */
 
 function summarise(bookingRows, campRows) {
@@ -301,6 +553,10 @@ exports.handler = async () => {
         const sheets = await getSheets()
         const today = luxToday()
 
+        // Upgrades an older Overview layout; never creates the tab (that
+        // happens when the first camp page is opened on the website).
+        await ensureCampTabs(sheets, false)
+
         const meta = await sheets.spreadsheets.get({
             spreadsheetId: process.env.GOOGLE_SHEET_ID,
             fields: "sheets.properties(sheetId,title)",
@@ -319,6 +575,10 @@ exports.handler = async () => {
         }
 
         const camps = summarise(bookings, campRows)
+
+        // Participants and Revenue in the Overview tab.
+        const statsWritten = await writeCampStats(sheets, campStatsFromBookings(bookings))
+        if (statsWritten) console.log(`[overview] updated Participants/Revenue for ${statsWritten} camp(s)`)
 
         const statusOf = (c) => {
             const last = c.end || c.start
