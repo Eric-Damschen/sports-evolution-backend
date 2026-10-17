@@ -5,6 +5,13 @@
   # missing directory. A 404 on "/" is expected — there is no homepage here.
   publish = "."
 
+# Fonts for the emails: any email app may load them.
+[[headers]]
+  for = "/email/fonts/*"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
+    Cache-Control = "public, max-age=31536000"
+
 # Clean /api/... URLs. status = 200 is a rewrite, so POST bodies and the
 # stripe-signature header pass through byte-for-byte.
 
