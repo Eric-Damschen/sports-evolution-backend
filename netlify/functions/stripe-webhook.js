@@ -962,6 +962,17 @@ const EMAIL = {
     head: "'Space Grotesk',Arial,Helvetica,sans-serif",
 }
 const EMAIL_ASSET_BASE = String(process.env.EMAIL_ASSET_BASE || process.env.URL || "").replace(/\/$/, "")
+
+// Web fonts for the emails (files in email/fonts/ of this repo). Apple Mail,
+// iPhone Mail, Outlook for Mac/iOS and Samsung Mail show them; Gmail and
+// Outlook for Windows show Arial instead. "@media screen" keeps Outlook for
+// Windows from falling back to Times New Roman.
+function emailFontCss(base) {
+    if (!base) return ""
+    const f = (family, weight, file) =>
+        `@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};src:url(${base}/email/fonts/${file}) format('woff2');}`
+    return `<style>@media screen{${f("Space Grotesk", 700, "space-grotesk-700.woff2")}${f("IBM Plex Sans", 400, "ibm-plex-sans-400.woff2")}${f("IBM Plex Sans", 600, "ibm-plex-sans-600.woff2")}${f("IBM Plex Sans", 700, "ibm-plex-sans-700.woff2")}}</style>`
+}
 // The long one-line logo, shown once at the bottom of the email.
 const EMAIL_LOGO_FILE = String(process.env.EMAIL_LOGO_FILE || "email/se-logo-long.png").replace(/^\//, "")
 
@@ -1041,7 +1052,7 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
     // ★ Google link inline; Apple/Outlook use the attached .ics.
     const calendarSection = calendarEvent
         ? `<tr><td style="padding:28px 28px 0;">${emailLabel(t.addToCalendar)}
-<a href="${esc(googleCalendarUrl(calendarEvent))}" style="display:inline-block;padding:10px 18px;border:1px solid ${EMAIL.border};background:${EMAIL.box};border-radius:999px;color:${EMAIL.text};text-decoration:none;font-weight:bold;">${esc(t.googleCalendar)}</a>
+<a href="${esc(googleCalendarUrl(calendarEvent))}" style="display:inline-block;padding:10px 18px;border:1px solid ${EMAIL.border};background:${EMAIL.box};border-radius:999px;color:${EMAIL.text};text-decoration:none;font-family:${EMAIL.head};font-weight:bold;">${esc(t.googleCalendar)}</a>
 <p style="margin:8px 0 0;color:${EMAIL.muted};font-size:13px;">${esc(t.appleCalendar)}</p>
 </td></tr>`
         : ""
@@ -1050,7 +1061,7 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
         ? `<img src="${esc(EMAIL_ASSET_BASE)}/${esc(EMAIL_LOGO_FILE)}" width="200" height="15" alt="Sports Evolution" style="display:block;border:0;width:200px;height:auto;margin-top:24px;">`
         : ""
 
-    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${emailFontCss(EMAIL_ASSET_BASE)}</head>
 <body style="margin:0;padding:0;background:${EMAIL.page};">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.page};"><tr><td align="center" style="padding:24px 12px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:${EMAIL.card};border:1px solid ${EMAIL.border};border-radius:4px;font-family:${EMAIL.font};color:${EMAIL.text};font-size:15px;line-height:1.55;">
