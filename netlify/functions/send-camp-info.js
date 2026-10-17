@@ -55,6 +55,17 @@ const DRY_RUN = String(process.env.CAMP_INFO_DRY_RUN || "").toLowerCase() === "t
 const ADMIN_NOTIFY_EMAIL = process.env.ADMIN_NOTIFY_EMAIL || "info@sportsevolution.lu"
 const REPLY_TO = process.env.RESEND_REPLY_TO || "info@sportsevolution.lu"
 const ASSET_BASE = String(process.env.EMAIL_ASSET_BASE || process.env.URL || "").replace(/\/$/, "")
+
+// Web fonts for the emails (files in email/fonts/ of this repo). Apple Mail,
+// iPhone Mail, Outlook for Mac/iOS and Samsung Mail show them; Gmail and
+// Outlook for Windows show Arial instead. "@media screen" keeps Outlook for
+// Windows from falling back to Times New Roman.
+function emailFontCss(base) {
+    if (!base) return ""
+    const f = (family, weight, file) =>
+        `@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};src:url(${base}/email/fonts/${file}) format('woff2');}`
+    return `<style>@media screen{${f("Space Grotesk", 700, "space-grotesk-700.woff2")}${f("IBM Plex Sans", 400, "ibm-plex-sans-400.woff2")}${f("IBM Plex Sans", 600, "ibm-plex-sans-600.woff2")}${f("IBM Plex Sans", 700, "ibm-plex-sans-700.woff2")}}</style>`
+}
 // The long one-line logo, shown once at the bottom of the email.
 const LOGO_FILE = String(process.env.EMAIL_LOGO_FILE || "email/se-logo-long.png").replace(/^\//, "")
 
@@ -633,7 +644,7 @@ function buildEmail({ t, parentName, campRow, link, startISO, endISO, participan
         ? t.headingDay(startISO)
         : fmtDay(startISO, t.locale, { weekday: "long", day: "numeric", month: "long" })
 
-    return `<!doctype html><html lang="${esc(t.locale.slice(0, 2))}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    return `<!doctype html><html lang="${esc(t.locale.slice(0, 2))}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${emailFontCss(ASSET_BASE)}</head>
 <body style="margin:0;padding:0;background:${C.page};">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.page};"><tr><td align="center" style="padding:24px 12px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:${C.card};border:1px solid ${C.border};border-radius:4px;font-family:${FONT};color:${C.text};font-size:15px;line-height:1.55;">
@@ -647,7 +658,7 @@ function buildEmail({ t, parentName, campRow, link, startISO, endISO, participan
 <p style="margin:0 0 4px;font-family:${FONT_HEAD};font-size:17px;font-weight:bold;">${esc(t.waTitle)}</p>
 <p style="margin:0 0 16px;color:${C.muted};font-size:14px;">${esc(t.waText)}</p>
 ${link
-    ? `<a href="${esc(link)}" style="display:inline-block;background:${C.whatsapp};color:${C.whatsappText};text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:999px;">${esc(t.waButton)}</a>`
+    ? `<a href="${esc(link)}" style="display:inline-block;background:${C.whatsapp};color:${C.whatsappText};text-decoration:none;font-family:${FONT_HEAD};font-weight:bold;padding:12px 22px;border-radius:999px;">${esc(t.waButton)}</a>`
     : `<p style="margin:0;color:${C.muted};font-size:13px;font-style:italic;">Test email — the camp's WhatsApp button appears here.</p>`}
 </td></tr></table>
 </td></tr>
