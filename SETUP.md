@@ -15,6 +15,8 @@ netlify/functions/
     send-camp-info.js
     update-overview.js
     register-camp.js
+    send-feedback-email.js
+    feedback.js
     send-test-emails.js
 email/
     se-logo-long.png (logo at the bottom of the confirmation and camp-info emails)
@@ -47,13 +49,24 @@ Optional:
 |---|---|---|
 | `RESEND_BCC` | — | a copy of every confirmation email to you |
 | `EMAIL_LOGO_FILE` | `email/se-logo-long.png` | path of the email logo in this repo, if yours has another name |
-| `TEST_EMAIL_KEY` | — | any word; switches on `/api/send-test-emails?key=…` (sends both emails to info@). Remove it afterwards |
+| `TEST_EMAIL_KEY` | — | any word; switches on the test emails (see "Test emails"). Remove it afterwards |
 | `ALLOWED_ORIGINS` | `https://www.sportsevolution.lu,https://sportsevolution.lu` | websites allowed to report camps to `register-camp` |
 | `CAMP_INFO_DRY_RUN` | — | `true` = the camp-info job only logs what it would send |
 | `ADMIN_NOTIFY_EMAIL` | `info@sportsevolution.lu` | short "new booking" alert after each successful payment (comma-separate several addresses) |
 | `RESEND_REPLY_TO` | — | where parents' replies go |
 | `CONFIRMATION_PATH` | `/confirmation-page` | the Framer page Stripe returns to |
 | `PENDING_HOLD_MINUTES` | `30` | how long a checkout holds a seat |
+| `FEEDBACK_PAGE_URL` | `SITE_URL` + `/feedback` | the Framer feedback page |
+| `FEEDBACK_EMAIL_DRY_RUN` | — | `true` = the feedback-email job only logs what it would send |
+| `FEEDBACK_ALLOWED_ORIGINS` | `ALLOWED_ORIGINS` | websites allowed to use the feedback form |
+| `FEEDBACK_OPEN_DAYS` | `60` | days after the camp a feedback link still works |
+
+Required for the feedback feature (see "Feedback" below):
+
+| Variable | |
+|---|---|
+| `FEEDBACK_SECRET` | any random text of 32+ characters (e.g. from a password generator). Signs the star links. Never change it after the first feedback emails went out, or their links stop working |
+| `FEEDBACK_SHEET_ID` | the id of the separate "Camp feedback" spreadsheet |
 
 **Netlify only picks up a changed variable on the next deploy.** After editing
 one, trigger a redeploy.
@@ -66,7 +79,8 @@ one, trigger a redeploy.
 - **Z1 = `Position`**, **AA1 = `Discount code`**, **AB1 = `Heard about us`**.
 - Shared with the service account address as **Editor**.
 - **AC1 = `Info email sent`** — the camp-info job writes a timestamp here. The column must exist (insert it after AB); until it does, the job sends nothing.
-- Never insert, delete or reorder columns A–AC. Add new columns after AC.
+- **AD1 = `Feedback email sent`** — the feedback-email job writes a timestamp here. Until the column exists, no feedback email is sent.
+- Never insert, delete or reorder columns A–AD. Add new columns after AD.
 - Column AB holds the answer to "How did you hear about us?": `Friends/family`, `Club or coach`, `Instagram`, `Facebook`, `TikTok`, `Meta ad`, `Internet search`, `Came before`, or `Other: <their words>` (always in English).
 
 ### Minimum age
@@ -148,10 +162,20 @@ as it was.
 
 ## Test emails
 
-Set `TEST_EMAIL_KEY` in Netlify (any word), redeploy, then open
-`https://<your-site>.netlify.app/api/send-test-emails?key=<that word>`.
-One test confirmation and one test camp-info email go to info@ (no WhatsApp
-link, sample family, real camp details). Remove the variable afterwards.
+Set `TEST_EMAIL_KEY` in Netlify (any word), redeploy, then open one of these
+links (replace `<your-site>` and `<word>`):
+
+| Link | Sends |
+|---|---|
+| `https://<your-site>.netlify.app/api/send-test-emails?key=<word>` | all three |
+| `…?key=<word>&type=confirmation` | booking confirmation (with calendar invite) |
+| `…?key=<word>&type=info` | camp-info email (no WhatsApp link) |
+| `…?key=<word>&type=feedback` | feedback email (stars open the demo page) |
+
+Add `&lang=fr`, `&lang=de` or `&lang=pt` for another language. The emails go
+to info@ only (`ADMIN_NOTIFY_EMAIL`), with "[TEST]" in the subject, a sample
+family and the next camp from the Overview tab. Nothing is written to the
+sheets. Remove the variable afterwards.
 
 ## Year tabs
 
