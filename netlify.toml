@@ -38,8 +38,14 @@
   to = "/.netlify/functions/register-camp"
   status = 200
 
-# Sends one test confirmation + camp-info email to info@ (only when
-# TEST_EMAIL_KEY is set in Netlify and the link carries that key).
+# The feedback page on the website reads and saves answers here.
+[[redirects]]
+  from = "/api/feedback"
+  to = "/.netlify/functions/feedback"
+  status = 200
+
+# Test emails to info@ (only when TEST_EMAIL_KEY is set in Netlify and the
+# link carries that key): ?key=…&type=confirmation|info|feedback&lang=en|fr|de|pt
 [[redirects]]
   from = "/api/send-test-emails"
   to = "/.netlify/functions/send-test-emails"
@@ -61,4 +67,9 @@
 # Removes ended camps from the "Overview" tab and keeps the year tabs
 # ("2026", …) up to date. Only reads the Bookings tab.
 [functions."update-overview"]
+  schedule = "*/15 * * * *"
+
+# Sends the thank-you email with the five star links the day after each camp
+# (10:00–20:00 Luxembourg time, one per booking).
+[functions."send-feedback-email"]
   schedule = "*/15 * * * *"
