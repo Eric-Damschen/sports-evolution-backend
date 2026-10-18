@@ -52,7 +52,7 @@ const RESPONSES_TAB = "Responses"
 const SUMMARY_TAB = "Summary"
 const HEADER = [
     "Status", "Last update", "Booking ID", "Booking reference", "Camp", "Location", "Sport",
-    "Camp start", "Camp end", "Parent first name", "Children", "Language",
+    "Camp start", "Camp end", "Parent name", "Children", "Language",
     "Fun", "Coaches", "Organisation", "Favourite moments", "Favourite (own words)",
     "Clothing set", "Lunch", "Next time", "Testimonial consent",
 ]
@@ -289,6 +289,16 @@ async function ensureTabs(sheets) {
         }
     }
 
+    // Older tabs: "Parent first name" → "Parent name" (now the full name).
+    if (find(RESPONSES_TAB)) {
+        const h = await sheets.spreadsheets.values.get({ spreadsheetId, range: tab(RESPONSES_TAB, "J1") })
+        if (String(((h.data.values || [])[0] || [])[0] || "") === "Parent first name") {
+            await sheets.spreadsheets.values.update({
+                spreadsheetId, range: tab(RESPONSES_TAB, "J1"), valueInputOption: "RAW", requestBody: { values: [["Parent name"]] },
+            })
+        }
+    }
+
     const summary = find(SUMMARY_TAB)
     if (!summary) {
         const sheetId = await add(SUMMARY_TAB)
@@ -374,7 +384,7 @@ function baseRow(b, status) {
     row[R.sport] = SPORTS[b.sport] || b.sport
     row[R.start] = b.start
     row[R.end] = b.end
-    row[R.parent] = b.parentName.split(/\s+/)[0] || ""
+    row[R.parent] = b.parentName // full name (testimonials may use it)
     row[R.children] = b.children.join(", ")
     row[R.language] = b.lang
     return row
