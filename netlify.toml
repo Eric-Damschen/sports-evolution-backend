@@ -57,6 +57,12 @@
   to = "/.netlify/functions/waitlist"
   status = 200
 
+# "New camp at this location" alerts: sign-up and unsubscribe.
+[[redirects]]
+  from = "/api/camp-alerts"
+  to = "/.netlify/functions/camp-alerts"
+  status = 200
+
 # Test emails to info@ (only when TEST_EMAIL_KEY is set in Netlify and the
 # link carries that key): ?key=…&type=confirmation|info|feedback&lang=en|fr|de|pt
 [[redirects]]
@@ -96,3 +102,8 @@
 # Once a night (01:15 UTC = 02:15 or 03:15 Luxembourg time).
 [functions."delete-medical-notes"]
   schedule = "15 1 * * *"
+
+# Emails families signed up for a location when a new camp there goes
+# online (10:00–19:00 Luxembourg time, one email per family and camp).
+[functions."camp-alerts-send"]
+  schedule = "*/15 * * * *"
