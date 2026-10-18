@@ -10,6 +10,7 @@
 //   /api/send-test-emails?key=YOUR_KEY&type=reminder       feedback reminder (3 days later)
 //   /api/send-test-emails?key=YOUR_KEY&type=refund         refund email (partial refund example)
 //   /api/send-test-emails?key=YOUR_KEY&type=waitlist       waiting-list offer (12 hours to book)
+//   /api/send-test-emails?key=YOUR_KEY&type=alert          new-camp alert
 //   add &lang=fr, &lang=de or &lang=pt for another language (default: en)
 //
 // Sample family (fake names), real camp details from the "Overview" /
@@ -24,12 +25,14 @@ const webhook = require("./stripe-webhook.js")._internal
 const campInfo = require("./send-camp-info.js")._internal
 const feedbackMail = require("./send-feedback-email.js")._internal
 const waitlistMail = require("./waitlist-offers.js")._internal
+const alertMail = require("./camp-alerts-send.js")._internal
+const campAlerts = require("./camp-alerts.js")._internal
 const { google } = require("googleapis")
 
 const TO = String(process.env.ADMIN_NOTIFY_EMAIL || "info@sportsevolution.lu")
     .split(",").map((s) => s.trim()).filter(Boolean)
 const REPLY_TO = process.env.RESEND_REPLY_TO || "info@sportsevolution.lu"
-const TYPES = ["confirmation", "info", "feedback", "reminder", "refund", "waitlist"]
+const TYPES = ["confirmation", "info", "feedback", "reminder", "refund", "waitlist", "alert"]
 const DEFAULT_TYPES = ["confirmation", "info", "feedback"] // sent when no type is given
 const LANGS = ["en", "fr", "de", "pt"]
 const LOCALES = { en: "en-GB", fr: "fr-FR", de: "de-DE", pt: "pt-PT" }
@@ -198,6 +201,25 @@ async function sendWaitlist(camp, lang) {
     await waitlistMail.sendEmail(TO, `[TEST] ${t.subject(camp.location, 2)}`, html)
 }
 
+async function sendAlert(camp, lang) {
+    const t = alertMail.T[lang] || alertMail.T.en
+    const page = String(process.env.SITE_URL || "https://www.sportsevolution.lu").replace(/\/$/, "") + "/camps"
+    // The unsubscribe link in a test only works when FEEDBACK_SECRET is set.
+    const unsubscribeLink = campAlerts.unsubscribeUrl(TO[0])
+    const html = alertMail.buildAlertEmail({
+        t,
+        name: "Anna Martin",
+        location: camp.location,
+        sportKey: String(camp.sport).toLowerCase(),
+        start: camp.start,
+        end: camp.end,
+        lang,
+        link: page,
+        unsubscribeLink,
+    })
+    await campInfo.sendEmail(TO, `[TEST] ${t.subject(camp.location, alertMail.dateRange(camp.start, camp.end, lang))}`, html, REPLY_TO)
+}
+
 async function sendFeedback(camp, lang) {
     const pageUrl = String(process.env.FEEDBACK_PAGE_URL ||
         (process.env.SITE_URL ? `${String(process.env.SITE_URL).replace(/\/$/, "")}/feedback` : "https://www.sportsevolution.lu/feedback"))
@@ -214,7 +236,7 @@ async function sendFeedback(camp, lang) {
     await campInfo.sendEmail(TO, `[TEST] ${t.subject(camp.location)}`, html, REPLY_TO)
 }
 
-const NAMES = { confirmation: "confirmation", info: "camp info", feedback: "feedback", reminder: "feedback reminder", refund: "refund", waitlist: "waiting-list offer" }
+const NAMES = { confirmation: "confirmation", info: "camp info", feedback: "feedback", reminder: "feedback reminder", refund: "refund", waitlist: "waiting-list offer", alert: "new-camp alert" }
 
 exports.handler = async (event) => {
     const q = event.queryStringParameters || {}
@@ -224,7 +246,7 @@ exports.handler = async (event) => {
 
     const type = String(q.type || "all").toLowerCase()
     if (type !== "all" && !TYPES.includes(type)) {
-        return page(400, "Unknown type. Use <strong>confirmation</strong>, <strong>info</strong>, <strong>feedback</strong>, <strong>reminder</strong>, <strong>refund</strong>, <strong>waitlist</strong>, or leave it out for the first three.")
+        return page(400, "Unknown type. Use <strong>confirmation</strong>, <strong>info</strong>, <strong>feedback</strong>, <strong>reminder</strong>, <strong>refund</strong>, <strong>waitlist</strong>, <strong>alert</strong>, or leave it out for the first three.")
     }
     const lang = LANGS.includes(String(q.lang || "").toLowerCase()) ? String(q.lang).toLowerCase() : "en"
     const which = type === "all" ? DEFAULT_TYPES : [type]
@@ -240,6 +262,7 @@ exports.handler = async (event) => {
             if (w === "reminder") await sendReminder(camp, lang)
             if (w === "refund") await sendRefund(camp, lang)
             if (w === "waitlist") await sendWaitlist(camp, lang)
+            if (w === "alert") await sendAlert(camp, lang)
             sent.push(NAMES[w])
         } catch (err) {
             console.error(`[test-emails] ${w} failed:`, err)
