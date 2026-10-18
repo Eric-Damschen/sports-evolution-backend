@@ -51,6 +51,12 @@
   to = "/.netlify/functions/feedback"
   status = 200
 
+# Booking forms: "Join the waiting list" on sold-out camps.
+[[redirects]]
+  from = "/api/waitlist"
+  to = "/.netlify/functions/waitlist"
+  status = 200
+
 # Test emails to info@ (only when TEST_EMAIL_KEY is set in Netlify and the
 # link carries that key): ?key=…&type=confirmation|info|feedback&lang=en|fr|de|pt
 [[redirects]]
@@ -80,3 +86,13 @@
 # (10:00–20:00 Luxembourg time, one per booking).
 [functions."send-feedback-email"]
   schedule = "*/15 * * * *"
+
+# Offers free places to families on the "Waitlist" tab (12 hours to book,
+# no hold). Offers only go out between 08:00 and 20:00 Luxembourg time.
+[functions."waitlist-offers"]
+  schedule = "*/15 * * * *"
+
+# Empties "Allergies / notes" (column H) 3 months after each camp.
+# Once a night (01:15 UTC = 02:15 or 03:15 Luxembourg time).
+[functions."delete-medical-notes"]
+  schedule = "15 1 * * *"
