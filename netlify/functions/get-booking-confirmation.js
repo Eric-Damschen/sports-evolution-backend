@@ -120,6 +120,8 @@ exports.handler = async (event) => {
             // Used to build the "add to calendar" links.
             campStartISO: (session.metadata && session.metadata.campStartISO) || "",
             campEndISO: (session.metadata && session.metadata.campEndISO) || "",
+            // The camp page, for the "share with friends" link.
+            campPageUrl: (session.metadata && session.metadata.pageUrl) || "",
             total:
                 typeof session.amount_total === "number"
                     ? session.amount_total / 100
