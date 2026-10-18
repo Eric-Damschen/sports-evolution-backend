@@ -439,22 +439,37 @@ async function readCampList(sheets) {
 }
 /* ---------- end of camp list block ---------- */
 
-// "Camp details" column F = the camp's group size from the booking form.
-// Read by waitlist-offers.js to know when a place is free. Only this
-// function writes column F; the shared block above only uses A–E.
-const GROUP_SIZE_LETTER = "F"
-async function writeGroupSize(sheets, campKey, size) {
+// "Camp details" column F = group size (read by waitlist-offers.js) and
+// column G = the camp page (read by camp-alerts-send.js). Only this function
+// writes F and G; the shared block above only uses A–E.
+function ownPageUrl(value) {
+    try {
+        const u = new URL(String(value || ""))
+        const ok = ALLOWED_ORIGINS.some((o) => {
+            try { return new URL(o).host === u.host } catch (e) { return false }
+        })
+        return u.protocol === "https:" && ok ? (u.origin + u.pathname).slice(0, 300) : ""
+    } catch (e) {
+        return ""
+    }
+}
+
+async function writeCampExtras(sheets, campKey, size, page) {
+    if (!size && !page) return
     const spreadsheetId = process.env.GOOGLE_SHEET_ID
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: campTabRange(DETAILS_TAB, "A:F") })
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: campTabRange(DETAILS_TAB, "A:G") })
     const rows = res.data.values || []
     const idx = rows.findIndex((r, i) => i > 0 && String(r[0] || "").trim() === String(campKey).trim())
     if (idx === -1) return // ended camp (not added)
+    const head = rows[0] || []
     const data = []
-    if (String((rows[0] || [])[5] || "").trim() !== "Group size") {
-        data.push({ range: campTabRange(DETAILS_TAB, `${GROUP_SIZE_LETTER}1`), values: [["Group size"]] })
+    if (String(head[5] || "").trim() !== "Group size") data.push({ range: campTabRange(DETAILS_TAB, "F1"), values: [["Group size"]] })
+    if (String(head[6] || "").trim() !== "Camp page") data.push({ range: campTabRange(DETAILS_TAB, "G1"), values: [["Camp page"]] })
+    if (size && String(rows[idx][5] || "") !== String(size)) {
+        data.push({ range: campTabRange(DETAILS_TAB, `F${idx + 1}`), values: [[size]] })
     }
-    if (String(rows[idx][5] || "") !== String(size)) {
-        data.push({ range: campTabRange(DETAILS_TAB, `${GROUP_SIZE_LETTER}${idx + 1}`), values: [[size]] })
+    if (page && String(rows[idx][6] || "") !== page) {
+        data.push({ range: campTabRange(DETAILS_TAB, `G${idx + 1}`), values: [[page]] })
     }
     if (data.length) {
         await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "RAW", data } })
@@ -528,13 +543,12 @@ exports.handler = async (event) => {
         }
         const result = await upsertCamp(sheets, camp, info)
         if (result && result !== "unchanged") console.log(`[register-camp] ${result} "${camp}"`)
-        // Group size (for the waiting list), in "Camp details" column F.
-        if (groupSize) {
-            try {
-                await writeGroupSize(sheets, camp, groupSize)
-            } catch (err) {
-                console.error(`[register-camp] could not write the group size of "${camp}":`, err.message)
-            }
+        // Group size (waiting list) and camp page (camp alerts) in
+        // "Camp details" columns F and G.
+        try {
+            await writeCampExtras(sheets, camp, groupSize, ownPageUrl(body.pageUrl))
+        } catch (err) {
+            console.error(`[register-camp] could not write group size / page of "${camp}":`, err.message)
         }
         return json(200, { ok: true, result }, origin)
     } catch (err) {
