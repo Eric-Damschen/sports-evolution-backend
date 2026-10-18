@@ -439,6 +439,28 @@ async function readCampList(sheets) {
 }
 /* ---------- end of camp list block ---------- */
 
+// "Camp details" column F = the camp's group size from the booking form.
+// Read by waitlist-offers.js to know when a place is free. Only this
+// function writes column F; the shared block above only uses A–E.
+const GROUP_SIZE_LETTER = "F"
+async function writeGroupSize(sheets, campKey, size) {
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: campTabRange(DETAILS_TAB, "A:F") })
+    const rows = res.data.values || []
+    const idx = rows.findIndex((r, i) => i > 0 && String(r[0] || "").trim() === String(campKey).trim())
+    if (idx === -1) return // ended camp (not added)
+    const data = []
+    if (String((rows[0] || [])[5] || "").trim() !== "Group size") {
+        data.push({ range: campTabRange(DETAILS_TAB, `${GROUP_SIZE_LETTER}1`), values: [["Group size"]] })
+    }
+    if (String(rows[idx][5] || "") !== String(size)) {
+        data.push({ range: campTabRange(DETAILS_TAB, `${GROUP_SIZE_LETTER}${idx + 1}`), values: [[size]] })
+    }
+    if (data.length) {
+        await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "RAW", data } })
+    }
+}
+
 exports.handler = async (event) => {
     const origin = String((event.headers && (event.headers.origin || event.headers.Origin)) || "")
         .replace(/\/$/, "")
@@ -470,6 +492,9 @@ exports.handler = async (event) => {
     const today = luxToday()
     if (end < today) return json(200, { ok: true, skipped: "ended" }, origin)
     if (daysBetween(today, start) > 730) return json(400, { error: "Invalid camp" }, origin)
+
+    const sizeNum = Number(body.groupSize)
+    const groupSize = Number.isInteger(sizeNum) && sizeNum >= 1 && sizeNum <= 500 ? sizeNum : 0
 
     const info = {
         location: oneLine(body.location, 120),
@@ -503,6 +528,14 @@ exports.handler = async (event) => {
         }
         const result = await upsertCamp(sheets, camp, info)
         if (result && result !== "unchanged") console.log(`[register-camp] ${result} "${camp}"`)
+        // Group size (for the waiting list), in "Camp details" column F.
+        if (groupSize) {
+            try {
+                await writeGroupSize(sheets, camp, groupSize)
+            } catch (err) {
+                console.error(`[register-camp] could not write the group size of "${camp}":`, err.message)
+            }
+        }
         return json(200, { ok: true, result }, origin)
     } catch (err) {
         console.error("[register-camp] failed:", err)
