@@ -201,6 +201,33 @@ Stripe's usual timing (5–10 business days). Stripe's own record of each
 refund is marked (metadata `se_refund_email`), so a refund never gets two
 emails. Refunds older than 7 days get no email.
 
+## Feedback (the day after the camp)
+
+`send-feedback-email` runs every 15 minutes. The day after a camp's last day
+(10:00–20:00 Luxembourg time) each paid booking gets **one** thank-you email
+(per booking, not per child) in the booking language, with five stars. A tap
+opens the feedback page (`/feedback`) with question 1 filled in. That star is
+saved at once (status `Started`); "Send feedback" completes the same row
+(status `Sent`) and the feedback can't be changed any more. Camps that ended
+more than 7 days ago get no email.
+
+The answers go to the separate **"Camp feedback"** spreadsheet:
+
+- **Responses** — one row per booking: status, booking, camp, parent name
+  (full name), children, language, the ratings (1–5), favourite moments and
+  own words, clothing set and lunch (blank when not ordered), next time, and
+  testimonial consent (Yes/No).
+- **Summary** — averages, how often each option was chosen, per-camp results
+  and a bar chart of the average ratings. Rewritten after each sent feedback;
+  don't type in it.
+
+Both tabs are created by the code. Only use a testimonial (which may show the
+parent's full name and the camp) when the row says **Yes**; if a parent
+withdraws it, change it to **No**.
+
+Try the page without a booking: `https://www.sportsevolution.lu/feedback?t=demo&fun=5`
+(`&lang=fr`, `de` or `pt`). The demo saves nothing.
+
 ## Feedback reminder
 
 Families who haven't pressed "Send feedback" 3 days after the feedback email
