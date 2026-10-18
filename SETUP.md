@@ -18,8 +18,12 @@ netlify/functions/
     send-feedback-email.js
     feedback.js
     send-test-emails.js
+    waitlist.js
+    waitlist-offers.js
+    delete-medical-notes.js
 email/
-    se-logo-long.png (logo at the bottom of the confirmation and camp-info emails)
+    se-logo-long.png (logo at the bottom of the confirmation, camp-info and feedback emails)
+    fonts/ (Space Grotesk and IBM Plex Sans for the emails — keep the file names)
 ```
 
 Every function is self-contained. **Delete `netlify/lib/` and `public/` from the
@@ -60,6 +64,8 @@ Optional:
 | `FEEDBACK_EMAIL_DRY_RUN` | — | `true` = the feedback-email job only logs what it would send |
 | `FEEDBACK_ALLOWED_ORIGINS` | `ALLOWED_ORIGINS` | websites allowed to use the feedback form |
 | `FEEDBACK_OPEN_DAYS` | `60` | days after the camp a feedback link still works |
+| `WAITLIST_DRY_RUN` | — | `true` = waiting-list offers are only logged |
+| `MEDICAL_DELETE_DRY_RUN` | — | `true` = medical notes are only logged, not emptied |
 
 Required for the feedback feature (see "Feedback" below):
 
@@ -80,7 +86,8 @@ one, trigger a redeploy.
 - Shared with the service account address as **Editor**.
 - **AC1 = `Info email sent`** — the camp-info job writes a timestamp here. The column must exist (insert it after AB); until it does, the job sends nothing.
 - **AD1 = `Feedback email sent`** — the feedback-email job writes a timestamp here. Until the column exists, no feedback email is sent.
-- Never insert, delete or reorder columns A–AD. Add new columns after AD.
+- **AE1 = `Feedback reminder sent`** — the 3-day feedback reminder writes a timestamp here. Without it, no reminders (the feedback email itself still goes out).
+- Never insert, delete or reorder columns A–AE. Add new columns after AE.
 - Column AB holds the answer to "How did you hear about us?": `Friends/family`, `Club or coach`, `Instagram`, `Facebook`, `TikTok`, `Meta ad`, `Internet search`, `Came before`, or `Other: <their words>` (always in English).
 
 ### Minimum age
@@ -171,11 +178,62 @@ links (replace `<your-site>` and `<word>`):
 | `…?key=<word>&type=confirmation` | booking confirmation (with calendar invite) |
 | `…?key=<word>&type=info` | camp-info email (no WhatsApp link) |
 | `…?key=<word>&type=feedback` | feedback email (stars open the demo page) |
+| `…?key=<word>&type=reminder` | feedback reminder |
+| `…?key=<word>&type=refund` | refund email (partial refund example) |
+| `…?key=<word>&type=waitlist` | waiting-list offer |
 
 Add `&lang=fr`, `&lang=de` or `&lang=pt` for another language. The emails go
 to info@ only (`ADMIN_NOTIFY_EMAIL`), with "[TEST]" in the subject, a sample
 family and the next camp from the Overview tab. Nothing is written to the
 sheets. Remove the variable afterwards.
+
+## Refund email
+
+When you refund in Stripe (full or partial), the parent gets one email per
+refund in the booking language: booking reference, camp, amount refunded (and
+the total when there were several refunds), "Your place has been released"
+for a full refund or "Your booking stays confirmed" for a partial one, and
+Stripe's usual timing (5–10 business days). Stripe's own record of each
+refund is marked (metadata `se_refund_email`), so a refund never gets two
+emails. Refunds older than 7 days get no email.
+
+## Feedback reminder
+
+Families who haven't pressed "Send feedback" 3 days after the feedback email
+get one reminder with the same stars (10:00–20:00 Luxembourg time). Who has
+answered is read from the Camp feedback sheet (Responses, status "Sent").
+Column AE stores the time; never more than one reminder.
+
+## Medical data
+
+`delete-medical-notes` runs once a night and empties **Allergies / notes
+(column H)** for every booking whose camp ended 3 months ago or more. Nothing
+else is changed. Health replies to the camp-info email in the info@ mailbox
+must be deleted by hand.
+
+## Waiting list
+
+Sold-out camps show "Join the waiting list" in the booking form (parent's
+first name, surname, email, number of children, one required checkbox).
+
+**"Waitlist" tab:** Location | First name | Surname | Number of children |
+Email | Language | Camp | Signed up | Status | Offered at | Camp page. The code
+adds the headers E–K. One row per family and camp; the same email signing up
+again updates its row. info@ gets a short alert for each sign-up.
+
+**Offers (`waitlist-offers`, every 15 minutes, 08:00–20:00):** free places =
+group size − places taken (paid, partially refunded, in checkout) − places
+offered in the last 12 hours. Families are offered a place in sign-up order
+when all their children fit. The email gives **12 hours** to book and says the
+place isn't reserved (first come, first served).
+
+Status: `Waiting` → `Offered` → `Booked` (they booked) or `Expired` (12 hours
+passed; the next family is offered the place) → `Closed` once the camp has
+started. You can edit or delete rows by hand.
+
+**Group size:** each camp page sends its group size, stored in the hidden
+"Camp details" tab, column F. If it's missing, open the camp page on the live
+website once.
 
 ## Year tabs
 
