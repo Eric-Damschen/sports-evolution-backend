@@ -1,0 +1,347 @@
+// netlify/functions/camp-alerts-send.js
+//
+// Self-contained on purpose (only shares the sign-up helpers of
+// camp-alerts.js). Runs on a schedule (see netlify.toml, every 15 minutes).
+//
+// When a new camp goes online (it appears in the "Overview" tab the first
+// time its page is opened on the website), every family in "Camp alerts"
+// with status "Active" for that location (and sport) gets ONE email:
+// "New camp in Mamer: 28–31 December 2026" with a button to the camp page.
+// No new camp, no email. Camps already online when a family signed up are
+// skipped (they're in that family's "Camps notified" from the start).
+//
+// Only between 10:00 and 19:00 Luxembourg time, and only for camps that
+// haven't started yet. Each email has a one-click unsubscribe link.
+//
+// Netlify environment variable (optional):
+//   CAMP_ALERTS_DRY_RUN=true   only log what would be sent
+
+const { google } = require("googleapis")
+const alerts = require("./camp-alerts.js")._internal
+
+const A = alerts.A
+const TAB = alerts.TAB
+const CAMPS_TAB = process.env.CAMPS_TAB || "Overview"
+const DETAILS_TAB = process.env.CAMP_DETAILS_TAB || "Camp details"
+const SEND_FROM_HOUR = 10
+const SEND_UNTIL_HOUR = 19
+const TIME_BUDGET_MS = 20000
+const PAUSE_BETWEEN_EMAILS_MS = 600
+
+const DRY_RUN = String(process.env.CAMP_ALERTS_DRY_RUN || "").toLowerCase() === "true"
+const REPLY_TO = process.env.RESEND_REPLY_TO || "info@sportsevolution.lu"
+const ASSET_BASE = String(process.env.EMAIL_ASSET_BASE || process.env.URL || "").replace(/\/$/, "")
+const LOGO_FILE = String(process.env.EMAIL_LOGO_FILE || "email/se-logo-long.png").replace(/^\//, "")
+const SITE_URL = String(process.env.SITE_URL || "https://www.sportsevolution.lu").replace(/\/$/, "")
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const norm = (v) => String(v === undefined || v === null ? "" : v).trim()
+const lower = (v) => norm(v).toLowerCase()
+
+function esc(value) {
+    return String(value === undefined || value === null ? "" : value)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+}
+
+function luxNow() {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/Luxembourg", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date())
+    const get = (t) => (parts.find((p) => p.type === t) || {}).value
+    return { date: `${get("year")}-${get("month")}-${get("day")}`, hour: Number(get("hour")) }
+}
+
+const isISO = (s) => /^\d{4}-\d{2}-\d{2}$/.test(norm(s))
+
+/* ---------------- Email ---------------- */
+
+const LOCALES = { en: "en-GB", fr: "fr-FR", de: "de-DE", pt: "pt-PT" }
+
+// "28–31 December 2026", "28.–31. Dezember 2026", "30 March – 2 April 2027"
+function dateRange(start, end, lang) {
+    if (!isISO(start)) return ""
+    const e = isISO(end) ? end : start
+    const loc = LOCALES[lang] || LOCALES.en
+    const f = (iso, o) => new Intl.DateTimeFormat(loc, { timeZone: "UTC", ...o }).format(new Date(`${iso}T12:00:00Z`))
+    const day = (iso) => f(iso, { day: "numeric" }).replace(/\D/g, "")
+    const dot = lang === "de" ? "." : ""
+    const month = (iso) => f(iso, { month: "long" })
+    const year = (iso) => iso.slice(0, 4)
+    const of = lang === "pt" ? " de " : " "
+    const dm = (iso) => `${day(iso)}${dot}${of}${month(iso)}`
+    if (e === start) return `${dm(start)}${of}${year(start)}`
+    if (start.slice(0, 7) === e.slice(0, 7)) return `${day(start)}${dot}–${dm(e)}${of}${year(e)}`
+    if (start.slice(0, 4) === e.slice(0, 4)) return `${dm(start)} – ${dm(e)}${of}${year(e)}`
+    return `${dm(start)}${of}${year(start)} – ${dm(e)}${of}${year(e)}`
+}
+
+const T = {
+    en: {
+        subject: (loc, dates) => `New camp in ${loc}${dates ? `: ${dates}` : ""}`,
+        hi: (n) => (n ? `Hi ${n},` : "Hi,"),
+        heading: (loc) => `New camp in ${loc}!`,
+        intro: (sport, loc) => `You asked us to tell you first: a new ${sport ? `${sport} ` : ""}camp is now open for booking in ${loc}.`,
+        camp: "Camp", sportLabel: "Sport", dates: "Dates",
+        button: "See the camp and book",
+        note: "Places are limited, so it's worth booking early.",
+        signOff: "Kind regards,", team: "Your Sports Evolution Team",
+        why: (loc) => `You're receiving this email because you asked to hear about new camps in ${loc}.`,
+        unsubscribe: "Unsubscribe",
+        sports: { football: "football", basketball: "basketball", volleyball: "volleyball" },
+        sportNames: { football: "Football", basketball: "Basketball", volleyball: "Volleyball" },
+    },
+    fr: {
+        subject: (loc, dates) => `Nouveau stage à ${loc}${dates ? ` : ${dates}` : ""}`,
+        hi: (n) => (n ? `Bonjour ${n},` : "Bonjour,"),
+        heading: (loc) => `Nouveau stage à ${loc} !`,
+        intro: (sport, loc) => `Vous nous avez demandé de vous prévenir : un nouveau stage${sport ? ` de ${sport}` : ""} est ouvert aux réservations à ${loc}.`,
+        camp: "Stage", sportLabel: "Sport", dates: "Dates",
+        button: "Voir le stage et réserver",
+        note: "Les places sont limitées : mieux vaut réserver tôt.",
+        signOff: "Cordialement,", team: "Votre équipe Sports Evolution",
+        why: (loc) => `Vous recevez cet e-mail car vous avez demandé à être informé des nouveaux stages à ${loc}.`,
+        unsubscribe: "Se désinscrire",
+        sports: { football: "football", basketball: "basket", volleyball: "volley" },
+        sportNames: { football: "Football", basketball: "Basket", volleyball: "Volley" },
+    },
+    de: {
+        subject: (loc, dates) => `Neues Camp in ${loc}${dates ? `: ${dates}` : ""}`,
+        hi: (n) => (n ? `Hallo ${n},` : "Hallo,"),
+        heading: (loc) => `Neues Camp in ${loc}!`,
+        intro: (sport, loc) => `Sie wollten es als Erste wissen: In ${loc} ist ab sofort ein neues ${sport ? `${sport}-Camp` : "Camp"} buchbar.`,
+        camp: "Camp", sportLabel: "Sportart", dates: "Termin",
+        button: "Camp ansehen und buchen",
+        note: "Die Plätze sind begrenzt – frühes Buchen lohnt sich.",
+        signOff: "Mit freundlichen Grüßen,", team: "Ihr Sports Evolution Team",
+        why: (loc) => `Sie erhalten diese E-Mail, weil Sie über neue Camps in ${loc} informiert werden möchten.`,
+        unsubscribe: "Abmelden",
+        sports: { football: "Fußball", basketball: "Basketball", volleyball: "Volleyball" },
+        sportNames: { football: "Fußball", basketball: "Basketball", volleyball: "Volleyball" },
+    },
+    pt: {
+        subject: (loc, dates) => `Novo campo em ${loc}${dates ? `: ${dates}` : ""}`,
+        hi: (n) => (n ? `Olá ${n},` : "Olá,"),
+        heading: (loc) => `Novo campo em ${loc}!`,
+        intro: (sport, loc) => `Pediu-nos para avisar primeiro: já pode reservar um novo campo${sport ? ` de ${sport}` : ""} em ${loc}.`,
+        camp: "Campo", sportLabel: "Desporto", dates: "Datas",
+        button: "Ver o campo e reservar",
+        note: "As vagas são limitadas, por isso vale a pena reservar cedo.",
+        signOff: "Com os melhores cumprimentos,", team: "A sua equipa Sports Evolution",
+        why: (loc) => `Recebe este e-mail porque pediu para ser informado sobre novos campos em ${loc}.`,
+        unsubscribe: "Cancelar subscrição",
+        sports: { football: "futebol", basketball: "basquetebol", volleyball: "voleibol" },
+        sportNames: { football: "Futebol", basketball: "Basquetebol", volleyball: "Voleibol" },
+    },
+}
+
+const C = { page: "#F2EFEA", card: "#FBFAF8", box: "#F7F4EF", border: "#E6E0D8", text: "#12110F", muted: "#5E5B57", yellow: "#F9B233" }
+const FONT = "'IBM Plex Sans',Arial,Helvetica,sans-serif"
+const FONT_HEAD = "'Space Grotesk',Arial,Helvetica,sans-serif"
+
+function emailFontCss(base) {
+    if (!base) return ""
+    const f = (family, weight, file) =>
+        `@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};src:url(${base}/email/fonts/${file}) format('woff2');}`
+    return `<style>@media screen{${f("Space Grotesk", 700, "space-grotesk-700.woff2")}${f("IBM Plex Sans", 400, "ibm-plex-sans-400.woff2")}${f("IBM Plex Sans", 600, "ibm-plex-sans-600.woff2")}${f("IBM Plex Sans", 700, "ibm-plex-sans-700.woff2")}}</style>`
+}
+
+function row(name, valueHtml, last) {
+    const line = last ? "" : `border-bottom:1px solid ${C.border};`
+    return `<tr><td style="padding:12px 16px;color:${C.muted};width:92px;vertical-align:top;${line}">${esc(name)}</td>` +
+        `<td style="padding:12px 16px 12px 0;vertical-align:top;${line}">${valueHtml}</td></tr>`
+}
+
+function buildAlertEmail({ t, name, location, sportKey, start, end, lang, link, unsubscribeLink }) {
+    const dates = dateRange(start, end, lang)
+    const rows = [
+        [t.camp, `<strong>${esc(location)}</strong>`],
+        ...(t.sportNames[sportKey] ? [[t.sportLabel, esc(t.sportNames[sportKey])]] : []),
+        ...(dates ? [[t.dates, esc(dates)]] : []),
+    ]
+    const details = rows.map(([k, v], i) => row(k, v, i === rows.length - 1)).join("")
+    const logo = ASSET_BASE
+        ? `<img src="${esc(ASSET_BASE)}/${esc(LOGO_FILE)}" width="200" height="15" alt="Sports Evolution" style="display:block;border:0;width:200px;height:auto;margin-top:24px;">`
+        : ""
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${emailFontCss(ASSET_BASE)}</head>
+<body style="margin:0;padding:0;background:${C.page};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.page};"><tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:${C.card};border:1px solid ${C.border};border-radius:4px;font-family:${FONT};color:${C.text};font-size:15px;line-height:1.55;">
+<tr><td style="padding:28px 28px 0;">
+<p style="margin:0 0 14px;">${esc(t.hi(name))}</p>
+<h1 style="margin:0 0 10px;font-family:${FONT_HEAD};font-size:28px;line-height:1.2;font-weight:bold;letter-spacing:-0.01em;color:${C.text};">${esc(t.heading(location))}</h1>
+<p style="margin:0;color:${C.muted};">${esc(t.intro(t.sports[sportKey] || "", location))}</p>
+</td></tr>
+<tr><td style="padding:24px 28px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.box};border:1px solid ${C.border};border-radius:4px;font-size:15px;">${details}</table>
+</td></tr>
+<tr><td style="padding:24px 28px 0;">
+<a href="${esc(link)}" style="display:inline-block;background:${C.yellow};color:${C.text};font-family:${FONT_HEAD};font-weight:bold;font-size:16px;text-decoration:none;padding:14px 28px;border-radius:999px;">${esc(t.button)}</a>
+<p style="margin:14px 0 0;color:${C.muted};font-size:14px;">${esc(t.note)}</p>
+</td></tr>
+<tr><td style="padding:24px 28px 28px;">
+<p style="margin:0;">${esc(t.signOff)}<br><strong>${esc(t.team)}</strong></p>
+${logo}
+<p style="margin:24px 0 0;color:${C.muted};font-size:12px;line-height:1.5;">${esc(t.why(location))} <a href="${esc(unsubscribeLink)}" style="color:${C.muted};">${esc(t.unsubscribe)}</a></p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`
+}
+
+async function sendEmail(to, subject, html, unsubscribeLink) {
+    if (!process.env.RESEND_API_KEY) throw new Error("RESEND_API_KEY is not set — refusing to send")
+    const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            from: process.env.RESEND_FROM || "Sports Evolution <info@order.sportsevolution.lu>",
+            to, subject, html, reply_to: REPLY_TO,
+            // One-click unsubscribe in Gmail, Apple Mail and others.
+            headers: {
+                "List-Unsubscribe": `<${unsubscribeLink}>`,
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            },
+        }),
+    })
+    const text = await res.text()
+    if (!res.ok) throw new Error(`Resend rejected the email — status ${res.status}: ${text}`)
+    return text
+}
+
+/* ---------------- Sheets ---------------- */
+
+function getSheets() {
+    const auth = new google.auth.JWT(
+        process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        null,
+        (process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
+        ["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return google.sheets({ version: "v4", auth })
+}
+
+async function read(sheets, range) {
+    try {
+        const res = await sheets.spreadsheets.values.get({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range })
+        return res.data.values || []
+    } catch (err) {
+        if (/Unable to parse range/i.test(String(err && err.message))) return null
+        throw err
+    }
+}
+
+// Adds a camp to a family's "Camps notified" (J), row found again first.
+async function markNotified(sheets, ref, campKey) {
+    const rows = (await read(sheets, `'${TAB}'!A:J`)) || []
+    const idx = rows.findIndex((r, i) => i > 0 && lower(r[A.email]) === lower(ref[A.email]) &&
+        lower(r[A.location]) === lower(ref[A.location]) && lower(r[A.sport]) === lower(ref[A.sport]))
+    if (idx < 1) return false
+    const list = norm(rows[idx][A.notified]).split("\n").map(norm).filter(Boolean)
+    if (!list.includes(campKey)) list.push(campKey)
+    await sheets.spreadsheets.values.update({
+        spreadsheetId: process.env.GOOGLE_SHEET_ID,
+        range: `'${TAB}'!J${idx + 1}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[list.join("\n")]] },
+    })
+    return true
+}
+
+/* ---------------- Main ---------------- */
+
+exports.handler = async () => {
+    const started = Date.now()
+    const now = luxNow()
+    if (now.hour < SEND_FROM_HOUR || now.hour >= SEND_UNTIL_HOUR) return { statusCode: 200, body: "outside sending hours" }
+    if (String(process.env.FEEDBACK_SECRET || "").length < 24) {
+        console.error("[camp-alerts] FEEDBACK_SECRET is missing — no alerts (it signs the unsubscribe links)")
+        return { statusCode: 200, body: "missing FEEDBACK_SECRET" }
+    }
+    try {
+        const sheets = getSheets()
+        const subs = await read(sheets, `'${TAB}'!A:J`)
+        if (!subs) return { statusCode: 200, body: "no tab" }
+        const active = subs.slice(1).filter((r) => norm(r[A.status]) === "Active" && norm(r[A.email]))
+        if (!active.length) return { statusCode: 200, body: JSON.stringify({ sent: 0 }) }
+
+        const camps = ((await read(sheets, `'${CAMPS_TAB}'!A:F`)) || []).slice(1)
+            .filter((r) => norm(r[0]) && isISO(r[4]) && norm(r[4]) > now.date)
+        const details = ((await read(sheets, `'${DETAILS_TAB}'!A:G`)) || []).slice(1)
+
+        const due = []
+        for (const camp of camps) {
+            const key = norm(camp[0])
+            const parts = alerts.campParts(key)
+            const location = norm(camp[2]) || key.replace(/\s*\(.*$/, "")
+            const sportKey = lower(camp[3]) || parts.sport
+            for (const s of active) {
+                if (lower(s[A.location]) !== lower(location) && lower(s[A.location]) !== parts.location) continue
+                if (norm(s[A.sport]) && lower(s[A.sport]) !== sportKey) continue
+                const notified = norm(s[A.notified]).split("\n").map(norm)
+                if (notified.includes(key)) continue
+                const page = norm((details.find((d) => norm(d[0]) === key) || [])[6])
+                due.push({ s, key, location, sportKey, start: norm(camp[4]), end: norm(camp[5]), link: /^https:\/\//.test(page) ? page : `${SITE_URL}/camps` })
+            }
+        }
+
+        let sent = 0
+        for (const d of due) {
+            if (Date.now() - started > TIME_BUDGET_MS) {
+                console.log(`[camp-alerts] time budget used — ${due.length - sent} left for the next run`)
+                break
+            }
+            const lang = ["en", "fr", "de", "pt"].includes(lower(d.s[A.lang])) ? lower(d.s[A.lang]) : "en"
+            const t = T[lang]
+            const email = lower(d.s[A.email])
+            const unsubscribeLink = alerts.unsubscribeUrl(email)
+            const html = buildAlertEmail({
+                t,
+                name: `${norm(d.s[A.first])} ${norm(d.s[A.surname])}`.trim(),
+                location: d.location,
+                sportKey: d.sportKey,
+                start: d.start,
+                end: d.end,
+                lang,
+                link: d.link,
+                unsubscribeLink,
+            })
+            const subject = t.subject(d.location, dateRange(d.start, d.end, lang))
+            if (DRY_RUN) {
+                console.log(`[camp-alerts] DRY RUN — would send "${subject}" to ${email}`)
+                sent++
+                continue
+            }
+            try {
+                await sendEmail([email], subject, html, unsubscribeLink)
+            } catch (err) {
+                console.error(`[camp-alerts] ${email}: sending failed:`, err.message)
+                await sleep(PAUSE_BETWEEN_EMAILS_MS)
+                continue
+            }
+            sent++
+            let marked = false
+            try {
+                marked = await markNotified(sheets, d.s, d.key)
+            } catch (err) {
+                console.error(`[camp-alerts] ${email}: sent but not marked:`, err.message)
+            }
+            if (!marked) {
+                console.error(`[camp-alerts] ${email}: sent but not marked — stopping this run`)
+                break
+            }
+            // The same family + another new camp later in this run reads
+            // the updated list from the sheet.
+            d.s[A.notified] = `${norm(d.s[A.notified])}\n${d.key}`
+            console.log(`[camp-alerts] "${d.key}" → ${email} (${lang})`)
+            await sleep(PAUSE_BETWEEN_EMAILS_MS)
+        }
+        console.log(`[camp-alerts] done — ${sent} sent, ${due.length - sent} pending`)
+        return { statusCode: 200, body: JSON.stringify({ sent, due: due.length }) }
+    } catch (err) {
+        console.error("[camp-alerts] run failed:", err)
+        return { statusCode: 500, body: "failed" }
+    }
+}
+
+// Used by send-test-emails.js and tests.
+exports._internal = { buildAlertEmail, dateRange, T, sendEmail }
