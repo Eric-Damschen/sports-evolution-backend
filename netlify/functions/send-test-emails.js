@@ -7,6 +7,9 @@
 //   /api/send-test-emails?key=YOUR_KEY&type=confirmation   booking confirmation
 //   /api/send-test-emails?key=YOUR_KEY&type=info           camp-info email (7 days before)
 //   /api/send-test-emails?key=YOUR_KEY&type=feedback       feedback email (day after the camp)
+//   /api/send-test-emails?key=YOUR_KEY&type=reminder       feedback reminder (3 days later)
+//   /api/send-test-emails?key=YOUR_KEY&type=refund         refund email (partial refund example)
+//   /api/send-test-emails?key=YOUR_KEY&type=waitlist       waiting-list offer (12 hours to book)
 //   add &lang=fr, &lang=de or &lang=pt for another language (default: en)
 //
 // Sample family (fake names), real camp details from the "Overview" /
@@ -20,12 +23,14 @@
 const webhook = require("./stripe-webhook.js")._internal
 const campInfo = require("./send-camp-info.js")._internal
 const feedbackMail = require("./send-feedback-email.js")._internal
+const waitlistMail = require("./waitlist-offers.js")._internal
 const { google } = require("googleapis")
 
 const TO = String(process.env.ADMIN_NOTIFY_EMAIL || "info@sportsevolution.lu")
     .split(",").map((s) => s.trim()).filter(Boolean)
 const REPLY_TO = process.env.RESEND_REPLY_TO || "info@sportsevolution.lu"
-const TYPES = ["confirmation", "info", "feedback"]
+const TYPES = ["confirmation", "info", "feedback", "reminder", "refund", "waitlist"]
+const DEFAULT_TYPES = ["confirmation", "info", "feedback"] // sent when no type is given
 const LANGS = ["en", "fr", "de", "pt"]
 const LOCALES = { en: "en-GB", fr: "fr-FR", de: "de-DE", pt: "pt-PT" }
 
@@ -149,6 +154,50 @@ async function sendInfo(camp, lang) {
     await campInfo.sendEmail(TO, `[TEST] ${t.subject(camp.location)}`, html, REPLY_TO)
 }
 
+async function sendReminder(camp, lang) {
+    const pageUrl = String(process.env.FEEDBACK_PAGE_URL ||
+        (process.env.SITE_URL ? `${String(process.env.SITE_URL).replace(/\/$/, "")}/feedback` : "https://www.sportsevolution.lu/feedback"))
+    const sep = pageUrl.includes("?") ? "&" : "?"
+    const t = feedbackMail.T[lang] || feedbackMail.T.en
+    const html = feedbackMail.buildEmail({
+        t,
+        parentName: "Anna Martin",
+        children: ["Léa", "Tom"],
+        location: camp.location,
+        starHref: (n) => `${pageUrl}${sep}t=demo&fun=${n}${lang === "en" ? "" : `&lang=${lang}`}`,
+        reminder: true,
+    })
+    await campInfo.sendEmail(TO, `[TEST] ${t.reminderSubject(camp.location)}`, html, REPLY_TO)
+}
+
+async function sendRefund(camp, lang) {
+    const C = webhook.COL
+    const first = new Array(28).fill("")
+    Object.assign(first, {
+        [C.camp]: camp.name, [C.parentName]: "Anna Martin", [C.email]: TO[0], [C.language]: lang,
+        [C.venue]: camp.location, [C.campDateRange]: rangeText(camp, lang), [C.bookingReference]: "SE-TEST-0001",
+    })
+    const t = webhook.T[lang] || webhook.T.en
+    const r = webhook.REFUND_T[lang] || webhook.REFUND_T.en
+    // Example: €25.90 (one clothing set) refunded from a €410.05 booking.
+    const html = webhook.buildRefundHtml({ first, t, r, refundCents: 2590, charge: { amount: 41005, amount_refunded: 2590 }, isFull: false })
+    await webhook.sendEmail(TO, `[TEST] ${r.subject("SE-TEST-0001")}`, html, null, { skipBcc: true, replyTo: REPLY_TO })
+}
+
+async function sendWaitlist(camp, lang) {
+    const t = waitlistMail.T[lang] || waitlistMail.T.en
+    const page = String(process.env.SITE_URL || "https://www.sportsevolution.lu").replace(/\/$/, "") + "/camps"
+    const html = waitlistMail.buildOfferEmail({
+        t,
+        name: "Anna Martin",
+        location: camp.location,
+        children: 2,
+        deadline: waitlistMail.deadlineText(Date.now() + 12 * 3600000, lang),
+        link: page,
+    })
+    await waitlistMail.sendEmail(TO, `[TEST] ${t.subject(camp.location, 2)}`, html)
+}
+
 async function sendFeedback(camp, lang) {
     const pageUrl = String(process.env.FEEDBACK_PAGE_URL ||
         (process.env.SITE_URL ? `${String(process.env.SITE_URL).replace(/\/$/, "")}/feedback` : "https://www.sportsevolution.lu/feedback"))
@@ -165,7 +214,7 @@ async function sendFeedback(camp, lang) {
     await campInfo.sendEmail(TO, `[TEST] ${t.subject(camp.location)}`, html, REPLY_TO)
 }
 
-const NAMES = { confirmation: "confirmation", info: "camp info", feedback: "feedback" }
+const NAMES = { confirmation: "confirmation", info: "camp info", feedback: "feedback", reminder: "feedback reminder", refund: "refund", waitlist: "waiting-list offer" }
 
 exports.handler = async (event) => {
     const q = event.queryStringParameters || {}
@@ -175,10 +224,10 @@ exports.handler = async (event) => {
 
     const type = String(q.type || "all").toLowerCase()
     if (type !== "all" && !TYPES.includes(type)) {
-        return page(400, "Unknown type. Use <strong>confirmation</strong>, <strong>info</strong>, <strong>feedback</strong> or leave it out for all three.")
+        return page(400, "Unknown type. Use <strong>confirmation</strong>, <strong>info</strong>, <strong>feedback</strong>, <strong>reminder</strong>, <strong>refund</strong>, <strong>waitlist</strong>, or leave it out for the first three.")
     }
     const lang = LANGS.includes(String(q.lang || "").toLowerCase()) ? String(q.lang).toLowerCase() : "en"
-    const which = type === "all" ? TYPES : [type]
+    const which = type === "all" ? DEFAULT_TYPES : [type]
 
     const camp = await sampleCamp()
     const sent = []
@@ -188,6 +237,9 @@ exports.handler = async (event) => {
             if (w === "confirmation") await sendConfirmation(camp, lang)
             if (w === "info") await sendInfo(camp, lang)
             if (w === "feedback") await sendFeedback(camp, lang)
+            if (w === "reminder") await sendReminder(camp, lang)
+            if (w === "refund") await sendRefund(camp, lang)
+            if (w === "waitlist") await sendWaitlist(camp, lang)
             sent.push(NAMES[w])
         } catch (err) {
             console.error(`[test-emails] ${w} failed:`, err)
