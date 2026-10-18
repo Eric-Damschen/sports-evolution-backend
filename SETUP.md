@@ -21,6 +21,8 @@ netlify/functions/
     waitlist.js
     waitlist-offers.js
     delete-medical-notes.js
+    camp-alerts.js
+    camp-alerts-send.js
 email/
     se-logo-long.png (logo at the bottom of the confirmation, camp-info and feedback emails)
     fonts/ (Space Grotesk and IBM Plex Sans for the emails — keep the file names)
@@ -66,6 +68,7 @@ Optional:
 | `FEEDBACK_OPEN_DAYS` | `60` | days after the camp a feedback link still works |
 | `WAITLIST_DRY_RUN` | — | `true` = waiting-list offers are only logged |
 | `MEDICAL_DELETE_DRY_RUN` | — | `true` = medical notes are only logged, not emptied |
+| `CAMP_ALERTS_DRY_RUN` | — | `true` = new-camp alerts are only logged |
 
 Required for the feedback feature (see "Feedback" below):
 
@@ -181,6 +184,7 @@ links (replace `<your-site>` and `<word>`):
 | `…?key=<word>&type=reminder` | feedback reminder |
 | `…?key=<word>&type=refund` | refund email (partial refund example) |
 | `…?key=<word>&type=waitlist` | waiting-list offer |
+| `…?key=<word>&type=alert` | new-camp alert |
 
 Add `&lang=fr`, `&lang=de` or `&lang=pt` for another language. The emails go
 to info@ only (`ADMIN_NOTIFY_EMAIL`), with "[TEST]" in the subject, a sample
@@ -231,9 +235,35 @@ Status: `Waiting` → `Offered` → `Booked` (they booked) or `Expired` (12 hour
 passed; the next family is offered the place) → `Closed` once the camp has
 started. You can edit or delete rows by hand.
 
-**Group size:** each camp page sends its group size, stored in the hidden
-"Camp details" tab, column F. If it's missing, open the camp page on the live
-website once.
+**Group size:** each camp page sends its group size and its address, stored in
+the hidden "Camp details" tab, columns F (Group size) and G (Camp page). If
+they're missing, open the camp page on the live website once.
+
+## Camp alerts ("New camp at this location")
+
+Families can ask to be emailed when a new camp opens at a location:
+- an unticked checkbox at the payment step of both booking forms;
+- an unticked checkbox on the feedback page;
+- the **Camp_alert_signup** box on camp pages (Framer component: Endpoint
+  `https://<your-site>.netlify.app/api/camp-alerts`, Location and Sport
+  connected to the CMS).
+
+**"Camp alerts" tab** (created by the code if missing): Email | First name |
+Surname | Location | Sport | Language | Source | Signed up | Status | Camps
+notified. One row per email + location + sport. Status `Active` or
+`Unsubscribed`.
+
+**Emails (`camp-alerts-send`, every 15 minutes, 10:00–19:00):** when a new camp
+appears in the Overview tab (its page was opened on the live website), every
+Active family for that location and sport gets one email with the dates and a
+button to the camp page ("Camp details" column G). Camps that were already
+online when a family signed up are skipped. No new camp, no email.
+
+Every email has a one-click unsubscribe link (also in the email header, for
+Gmail and Apple Mail). It sets the family's rows to `Unsubscribed`. The link
+is signed with `FEEDBACK_SECRET`.
+
+Test: `…/api/send-test-emails?key=<word>&type=alert`.
 
 ## Year tabs
 
