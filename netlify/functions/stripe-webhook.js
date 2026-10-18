@@ -680,14 +680,137 @@ async function handleRefund(charge) {
     }
     if (matches.every((m) => statusOf(m) === target)) {
         console.log(`[webhook] ${bookingId}: already "${target}"`)
-        return
+    } else {
+        const updated = await setStatus(sheets, matches, target)
+        console.log(
+            `[webhook] ${bookingId}: refunded €${(charge.amount_refunded / 100).toFixed(2)} ` +
+            `of €${(charge.amount / 100).toFixed(2)} — ${updated} row(s) "${target}"`
+        )
     }
 
-    const updated = await setStatus(sheets, matches, target)
-    console.log(
-        `[webhook] ${bookingId}: refunded €${(charge.amount_refunded / 100).toFixed(2)} ` +
-        `of €${(charge.amount / 100).toFixed(2)} — ${updated} row(s) "${target}"`
-    )
+    // ★ One email to the parent per refund. Never blocks the sheet update.
+    try {
+        await sendRefundEmails(charge, bookingId, matches, isFull)
+    } catch (err) {
+        console.error(`[webhook] ${bookingId}: refund email failed:`, err.message)
+    }
+}
+
+/* ---------------- Refund email ---------------- */
+
+const REFUND_T = {
+    en: {
+        subject: (ref) => `Your refund is on its way — ${ref}`,
+        headline: "Your refund is on its way",
+        introFull: "Your booking has been cancelled and refunded.",
+        introPartial: "We've refunded part of your booking. Your booking stays confirmed.",
+        reference: "Booking reference", camp: "Camp", refunded: "Refunded",
+        totalRefunded: "Total refunded", of: (a, b) => `${a} of ${b}`,
+        timing: "The money goes back to the card or wallet you paid with. Depending on your bank, it shows on your statement within 5–10 business days.",
+        questions: "Questions? Just reply to this email.",
+    },
+    fr: {
+        subject: (ref) => `Votre remboursement est en route — ${ref}`,
+        headline: "Votre remboursement est en route",
+        introFull: "Votre réservation a été annulée et remboursée.",
+        introPartial: "Nous avons remboursé une partie de votre réservation. Votre réservation reste confirmée.",
+        reference: "Référence", camp: "Stage", refunded: "Remboursé",
+        totalRefunded: "Total remboursé", of: (a, b) => `${a} sur ${b}`,
+        timing: "L'argent est reversé sur la carte ou le portefeuille utilisé pour le paiement. Selon votre banque, il apparaît sur votre relevé sous 5 à 10 jours ouvrables.",
+        questions: "Des questions ? Répondez simplement à cet e-mail.",
+    },
+    de: {
+        subject: (ref) => `Ihre Rückerstattung ist unterwegs — ${ref}`,
+        headline: "Ihre Rückerstattung ist unterwegs",
+        introFull: "Ihre Buchung wurde storniert und erstattet.",
+        introPartial: "Wir haben einen Teil Ihrer Buchung erstattet. Ihre Buchung bleibt bestätigt.",
+        reference: "Buchungsnummer", camp: "Camp", refunded: "Erstattet",
+        totalRefunded: "Insgesamt erstattet", of: (a, b) => `${a} von ${b}`,
+        timing: "Das Geld geht auf die Karte bzw. das Wallet zurück, mit dem Sie bezahlt haben. Je nach Bank erscheint es innerhalb von 5–10 Werktagen auf Ihrem Konto.",
+        questions: "Fragen? Antworten Sie einfach auf diese E-Mail.",
+    },
+    pt: {
+        subject: (ref) => `O seu reembolso está a caminho — ${ref}`,
+        headline: "O seu reembolso está a caminho",
+        introFull: "A sua reserva foi cancelada e reembolsada.",
+        introPartial: "Reembolsámos parte da sua reserva. A sua reserva mantém-se confirmada.",
+        reference: "Referência", camp: "Campo", refunded: "Reembolsado",
+        totalRefunded: "Total reembolsado", of: (a, b) => `${a} de ${b}`,
+        timing: "O dinheiro é devolvido ao cartão ou carteira digital com que pagou. Dependendo do seu banco, aparece no extrato dentro de 5 a 10 dias úteis.",
+        questions: "Dúvidas? Basta responder a este e-mail.",
+    },
+}
+const REFUND_EMAIL_MAX_AGE_DAYS = 7 // older refunds (before this feature) get no email
+
+// Each Stripe refund gets one email; Stripe's own record of the refund is
+// marked (metadata se_refund_email = "sent") so a repeated event can't send
+// it again.
+async function sendRefundEmails(charge, bookingId, matches, isFull) {
+    const first = matches[0].data
+    const to = String(first[COL.email] || "").trim()
+    if (!to) return
+    const list = await stripe.refunds.list({ charge: charge.id, limit: 100 })
+    const cutoff = Date.now() / 1000 - REFUND_EMAIL_MAX_AGE_DAYS * 86400
+    const due = (list.data || [])
+        .filter((r) => (r.status === "succeeded" || r.status === "pending") &&
+            !(r.metadata && r.metadata.se_refund_email) && r.created >= cutoff)
+        .sort((a, b) => a.created - b.created)
+    if (!due.length) return
+
+    const lang = String(first[COL.language] || "en").slice(0, 2).toLowerCase()
+    const t = T[lang] || T.en
+    const r = REFUND_T[lang] || REFUND_T.en
+    const replyTo = process.env.RESEND_REPLY_TO || "info@sportsevolution.lu"
+    for (const refund of due) {
+        const html = buildRefundHtml({ first, t, r, refundCents: refund.amount, charge, isFull })
+        await sendEmail([to], r.subject(first[COL.bookingReference] || ""), html, null, { replyTo })
+        try {
+            await stripe.refunds.update(refund.id, { metadata: { se_refund_email: "sent" } })
+        } catch (err) {
+            console.error(`[webhook] ${bookingId}: refund email sent but not marked (${refund.id}):`, err.message)
+        }
+        console.log(`[webhook] ${bookingId}: refund email sent to ${to} (${refund.id})`)
+    }
+}
+
+function buildRefundHtml({ first, t, r, refundCents, charge, isFull }) {
+    const euro = (cents) => `€${(Number(cents || 0) / 100).toFixed(2)}`
+    const location = first[COL.venue] || venueFromCamp(first[COL.camp])
+    const rows = [
+        [r.reference, esc(first[COL.bookingReference] || "")],
+        [r.camp, `<strong>${esc(location)}</strong>${first[COL.campDateRange] ? `<br>${esc(first[COL.campDateRange])}` : ""}`],
+        [r.refunded, `<strong>${esc(euro(refundCents))}</strong>`],
+        ...(charge.amount_refunded !== refundCents
+            ? [[r.totalRefunded, esc(r.of(euro(charge.amount_refunded), euro(charge.amount)))]]
+            : []),
+    ]
+    const detailsHtml = rows.map(([k, v], i) => emailRow(k, v, i === rows.length - 1)).join("")
+    const logo = EMAIL_ASSET_BASE
+        ? `<img src="${esc(EMAIL_ASSET_BASE)}/${esc(EMAIL_LOGO_FILE)}" width="200" height="15" alt="Sports Evolution" style="display:block;border:0;width:200px;height:auto;margin-top:24px;">`
+        : ""
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${emailFontCss(EMAIL_ASSET_BASE)}</head>
+<body style="margin:0;padding:0;background:${EMAIL.page};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.page};"><tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:${EMAIL.card};border:1px solid ${EMAIL.border};border-radius:4px;font-family:${EMAIL.font};color:${EMAIL.text};font-size:15px;line-height:1.55;">
+<tr><td style="padding:28px 28px 0;">
+<p style="margin:0 0 14px;">${esc(t.hi(first[COL.parentName] || ""))}</p>
+<h1 style="margin:0 0 10px;font-family:${EMAIL.head};font-size:28px;line-height:1.2;font-weight:bold;letter-spacing:-0.01em;color:${EMAIL.text};">${esc(r.headline)}</h1>
+<p style="margin:0;color:${EMAIL.muted};">${esc(isFull ? r.introFull : r.introPartial)}</p>
+</td></tr>
+<tr><td style="padding:28px 28px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.box};border:1px solid ${EMAIL.border};border-radius:4px;font-size:15px;">${detailsHtml}</table>
+</td></tr>
+<tr><td style="padding:24px 28px 0;">
+<p style="margin:0;color:${EMAIL.muted};font-size:14px;">${esc(r.timing)}</p>
+</td></tr>
+<tr><td style="padding:24px 28px 28px;">
+<p style="margin:0 0 16px;">${esc(r.questions)}</p>
+<p style="margin:0;">${esc(t.signOff)}<br><strong>${esc(t.team)}</strong></p>
+${logo}
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`
 }
 
 // Bookings made after payment_intent_data.metadata was added carry the id on
@@ -1135,4 +1258,4 @@ async function sendEmail(to, subject, html, calendarEvent, options = {}) {
 }
 
 // Used by send-test-emails.js (same templates as the real emails).
-exports._internal = { buildConfirmationHtml, buildCalendarEvent, sendEmail, T, COL }
+exports._internal = { buildRefundHtml, REFUND_T, buildConfirmationHtml, buildCalendarEvent, sendEmail, T, COL }
