@@ -79,6 +79,20 @@ function metaText(value, max) {
 
 // Multi-line text (paragraph fields): keeps line breaks, drops other
 // control characters, collapses spaces.
+// The camp page address, only when it's on our own website (SITE_URL host,
+// with or without www). Anything else becomes "".
+function campPageUrl(value) {
+    try {
+        const u = new URL(String(value || ""))
+        const site = new URL(process.env.SITE_URL || "https://www.sportsevolution.lu")
+        const bare = (h) => h.replace(/^www\./, "").toLowerCase()
+        if (u.protocol !== "https:" || bare(u.hostname) !== bare(site.hostname)) return ""
+        return (u.origin + u.pathname).slice(0, 400)
+    } catch (e) {
+        return ""
+    }
+}
+
 function metaMultiline(value, max) {
     return String(value || "")
         .replace(/\r\n?/g, "\n")
@@ -442,7 +456,7 @@ exports.handler = async (event) => {
             dropOffTime, pickUpTime, children, tripGuests, contact, total,
             addOnsIncluded, totalSpots, tripTotalSpots, language,
             campStartISO, campEndISO, consents, discountCode, referral,
-            sport, venueAddress, goodToKnow,
+            sport, venueAddress, goodToKnow, pageUrl,
         } = JSON.parse(event.body || "{}")
 
         if (!camp || !Array.isArray(children) || children.length === 0 || !contact) {
@@ -686,6 +700,9 @@ exports.handler = async (event) => {
             // "Good to know" from the camp page, line breaks kept, in up to
             // three 500-character parts (Stripe's limit per value).
             ...goodToKnowParts(goodToKnow),
+            // ★ The camp page (only our own website), for the "share with
+            // friends" link on the confirmation page.
+            pageUrl: campPageUrl(pageUrl),
         }
 
         let session
