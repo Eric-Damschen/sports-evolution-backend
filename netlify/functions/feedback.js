@@ -34,6 +34,7 @@
 //   FEEDBACK_OPEN_DAYS         optional — days after the camp the link works (60)
 
 const { google } = require("googleapis")
+const campAlerts = require("./camp-alerts.js")._internal
 const crypto = require("crypto")
 
 /* ---------------- Settings ---------------- */
@@ -41,7 +42,7 @@ const crypto = require("crypto")
 const BOOKINGS_TAB = process.env.GOOGLE_SHEET_TAB || "Bookings"
 const B = {
     bookingId: 0, camp: 2, firstName: 3, clothingQty: 8, meals: 11,
-    parentName: 12, status: 16, language: 17, role: 18, venue: 19,
+    parentName: 12, email: 13, status: 16, language: 17, role: 18, venue: 19,
     bookingReference: 22, startDate: 23, endDate: 24,
 }
 const ROLE_PARTICIPANT = "Participant"
@@ -231,6 +232,7 @@ async function readBooking(sheets, bookingId) {
         sport: sportKeyFromCamp(camp),
         start, end,
         parentName: String(first[B.parentName] || "").trim(),
+        email: String(first[B.email] || "").trim(),
         children: [...new Set(participants.map((r) => String(r[B.firstName] || "").trim()).filter(Boolean))],
         lang: LANGS.includes(lang) ? lang : "en",
         hasClothing: participants.some((r) => Number(r[B.clothingQty]) > 0),
@@ -543,7 +545,8 @@ exports.handler = async (event) => {
             next !== null && next.length > 0 &&
             (booking.hasClothing ? clothing > 0 : !a.clothing) &&
             (booking.hasLunch ? lunch > 0 : !a.lunch) &&
-            typeof a.consent === "boolean"
+            typeof a.consent === "boolean" &&
+            (a.alerts === undefined || typeof a.alerts === "boolean")
         if (!ok) return json(400, { error: "incomplete" }, origin)
 
         if (!demo) {
@@ -564,6 +567,24 @@ exports.handler = async (event) => {
                 console.error("[feedback] saved, but the Summary tab could not be updated:", err.message)
             }
             console.log(`[feedback] feedback sent for booking ${bookingId}`)
+            // "Email me when a new camp opens in …" ticked on the page.
+            if (a.alerts === true && booking.email) {
+                try {
+                    const names = booking.parentName.split(/\s+/)
+                    const result = await campAlerts.subscribe(sheets, {
+                        email: booking.email,
+                        firstName: names[0] || "",
+                        surname: names.slice(1).join(" "),
+                        location: booking.location,
+                        sport: booking.sport,
+                        lang: booking.lang,
+                        source: "Feedback",
+                    })
+                    console.log(`[feedback] camp alerts: ${result} for booking ${bookingId}`)
+                } catch (err) {
+                    console.error("[feedback] saved, but the camp alert sign-up failed:", err.message)
+                }
+            }
         }
         return json(200, { ok: true, saved: "sent" }, origin)
     } catch (err) {
