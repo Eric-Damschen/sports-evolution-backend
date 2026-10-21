@@ -276,7 +276,11 @@ async function handlePaid(session) {
         }
     }
 
-    const calendarEvent = buildCalendarEvent(matches, emailMeta, t)
+    // Trip tickets only: the camp dates are not the trip date, so no invite.
+    const hasParticipants = matches.some(
+        (m) => (m.data[COL.role] || ROLE_PARTICIPANT) === ROLE_PARTICIPANT
+    )
+    const calendarEvent = hasParticipants ? buildCalendarEvent(matches, emailMeta, t) : null
 
     await sendEmail(
         buyerEmail,
@@ -574,9 +578,12 @@ function buildAdminNotification(matches, session) {
     const n = participants.length
     const campName = first[COL.camp] || ""
 
-    const subject =
-        `New booking ${ref} · ${campName} · ` +
-        `${n} ${n === 1 ? "child" : "children"} · ${formatEuro(amountPaid)}`
+    const g = guests.length
+    const subject = n === 0
+        ? `New booking ${ref} · ${campName} · TRIP ONLY · ` +
+          `${g} trip ${g === 1 ? "ticket" : "tickets"} · ${formatEuro(amountPaid)}`
+        : `New booking ${ref} · ${campName} · ` +
+          `${n} ${n === 1 ? "child" : "children"} · ${formatEuro(amountPaid)}`
 
     const childLine = (m) => {
         const d = m.data
@@ -596,9 +603,9 @@ function buildAdminNotification(matches, session) {
     const rows = [
         ["Camp", esc(campName)],
         ["Dates", esc(first[COL.campDateRange] || "")],
-        ["Children", participants.map(childLine).join("<br>")],
+        ...(n > 0 ? [["Children", participants.map(childLine).join("<br>")]] : [["Booking", "Trip tickets only, no camp place. Send them the trip details."]]),
         ...(guests.length
-            ? [["Trip guests", guests.map((m) => `${esc(m.data[COL.firstName])} ${esc(m.data[COL.lastName])}`).join("<br>")]]
+            ? [["Trip guests", guests.map((m) => `${esc(m.data[COL.firstName])} ${esc(m.data[COL.lastName])}` + (m.data[COL.position] ? ` · ${esc(m.data[COL.position])}` : "")).join("<br>")]]
             : []),
         ["Parent", `${esc(first[COL.parentName])}<br>${esc(first[COL.email])}<br>${esc(first[COL.phone])}`],
         ["Paid", esc(formatEuro(amountPaid))],
@@ -1009,6 +1016,10 @@ const T = {
         goodToKnow: "Good to know",
         comingNext:
             "We will send you an email with all the necessary information one week before the start of the camp.",
+        tripTicket: "trip ticket", tripTicketsWord: "trip tickets",
+        tripAdult: "adult", tripChild: "child",
+        tripComingNext: "We'll contact you with the details of the trip before the camp.",
+        tripOutro: "Thank you for your trust. See you on the trip!",
     },
     fr: {
         subject: (ref) => `Paiement confirmé — ${ref}`,
@@ -1030,6 +1041,10 @@ const T = {
         goodToKnow: "Bon à savoir",
         comingNext:
             "Nous vous enverrons un e-mail avec toutes les informations nécessaires une semaine avant le début du stage.",
+        tripTicket: "billet sortie", tripTicketsWord: "billets sortie",
+        tripAdult: "adulte", tripChild: "enfant",
+        tripComingNext: "Nous vous contacterons avant le stage avec les détails de la sortie.",
+        tripOutro: "Merci pour votre confiance. À bientôt pour la sortie !",
     },
     de: {
         subject: (ref) => `Zahlung bestätigt — ${ref}`,
@@ -1051,6 +1066,10 @@ const T = {
         goodToKnow: "Gut zu wissen",
         comingNext:
             "Eine Woche vor Campbeginn senden wir Ihnen eine E-Mail mit allen notwendigen Informationen.",
+        tripTicket: "Ausflugsticket", tripTicketsWord: "Ausflugstickets",
+        tripAdult: "Erwachsener", tripChild: "Kind",
+        tripComingNext: "Wir melden uns vor dem Camp mit den Details zum Ausflug.",
+        tripOutro: "Danke für Ihr Vertrauen. Bis bald beim Ausflug!",
     },
     pt: {
         subject: (ref) => `Pagamento confirmado — ${ref}`,
@@ -1072,6 +1091,10 @@ const T = {
         goodToKnow: "Bom saber",
         comingNext:
             "Enviaremos um e-mail com todas as informações necessárias uma semana antes do início do campo.",
+        tripTicket: "bilhete de excursão", tripTicketsWord: "bilhetes de excursão",
+        tripAdult: "adulto", tripChild: "criança",
+        tripComingNext: "Entraremos em contacto consigo antes do campo com os detalhes da excursão.",
+        tripOutro: "Obrigado pela sua confiança. Até breve na excursão!",
     },
 }
 
@@ -1111,6 +1134,13 @@ function emailRow(name, valueHtml, last) {
 
 function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, calendarEvent, metadata = {}) {
     const first = matches[0].data
+    // "Marc Muster (adult)": the trip ticket type from column Z, when set.
+    const guestName = (data) => {
+        const name = `${data[COL.firstName]} ${data[COL.lastName]}`.trim()
+        const type = String(data[COL.position] || "").trim().toLowerCase()
+        const word = type === "child" ? t.tripChild : type === "adult" ? t.tripAdult : ""
+        return word ? `${name} (${word})` : name
+    }
 
     const orderTotal = isFinite(amountPaid)
         ? amountPaid.toFixed(2)
@@ -1140,9 +1170,18 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
         })
         .join("")
 
+    // ★ Trip tickets only: no child, so the guests get their own cards.
+    const tripOnly = participants.length === 0 && joiners.length > 0
+    const guestCards = joiners
+        .map(({ data }) =>
+            `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.box};border:1px solid ${EMAIL.border};border-radius:4px;margin:0 0 10px;">` +
+            `<tr><td style="padding:14px 16px;"><strong>${esc(guestName(data))}</strong></td></tr></table>`
+        )
+        .join("")
+
     const joinerSection = joiners.length
         ? `<p style="margin:6px 0 0;color:${EMAIL.muted};font-size:14px;"><strong style="color:${EMAIL.text};">${esc(t.tripTickets)} (${joiners.length}):</strong> ` +
-          `${esc(joiners.map(({ data }) => `${data[COL.firstName]} ${data[COL.lastName]}`.trim()).join(", "))}</p>`
+          `${esc(joiners.map(({ data }) => guestName(data)).join(", "))}</p>`
         : ""
 
     const countWord = participants.length === 1 ? t.child : t.children
@@ -1164,10 +1203,12 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
         ...(sportName ? [[t.sport, esc(sportName)]] : []),
         [t.dates, esc(first[COL.campDateRange])],
         [t.venue, venueHtml],
-        ...(first[COL.ageRange] ? [[t.ages, esc(first[COL.ageRange])]] : []),
-        ...(dropOffTime ? [[t.dropOff, esc(dropOffTime)]] : []),
-        ...(pickUpTime ? [[t.pickUp, esc(`${t.until} ${pickUpTime}`)]] : []),
-        [t.tickets, esc(`${participants.length} ${countWord}`)],
+        ...(!tripOnly && first[COL.ageRange] ? [[t.ages, esc(first[COL.ageRange])]] : []),
+        ...(!tripOnly && dropOffTime ? [[t.dropOff, esc(dropOffTime)]] : []),
+        ...(!tripOnly && pickUpTime ? [[t.pickUp, esc(`${t.until} ${pickUpTime}`)]] : []),
+        tripOnly
+            ? [t.tickets, esc(`${joiners.length} ${joiners.length === 1 ? t.tripTicket : t.tripTicketsWord}`)]
+            : [t.tickets, esc(`${participants.length} ${countWord}`)],
         [t.total, `<strong>€${esc(orderTotal)}</strong>`],
     ]
     const detailsHtml = rows.map(([k, v], i) => emailRow(k, v, i === rows.length - 1)).join("")
@@ -1196,15 +1237,15 @@ function buildConfirmationHtml(matches, dropOffTime, pickUpTime, t, amountPaid, 
 <tr><td style="padding:28px 28px 0;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.box};border:1px solid ${EMAIL.border};border-radius:4px;font-size:15px;">${detailsHtml}</table>
 </td></tr>
-<tr><td style="padding:28px 28px 0;">${emailLabel(t.perChild)}${childCards}${joinerSection}</td></tr>
+<tr><td style="padding:28px 28px 0;">${tripOnly ? `${emailLabel(t.tripTickets)}${guestCards}` : `${emailLabel(t.perChild)}${childCards}${joinerSection}`}</td></tr>
 ${calendarSection}
 <tr><td style="padding:24px 28px 0;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL.amberBg};border:1px solid ${EMAIL.amberBorder};border-radius:4px;"><tr><td style="padding:12px 16px;font-size:14px;color:${EMAIL.amberText};">
-<strong>${esc(t.goodToKnow)}:</strong> ${esc(t.comingNext)}
+<strong>${esc(t.goodToKnow)}:</strong> ${esc(tripOnly ? t.tripComingNext : t.comingNext)}
 </td></tr></table>
 </td></tr>
 <tr><td style="padding:24px 28px 28px;">
-<p style="margin:0 0 16px;">${esc(t.outro)}</p>
+<p style="margin:0 0 16px;">${esc(tripOnly ? t.tripOutro : t.outro)}</p>
 <p style="margin:0;">${esc(t.signOff)}<br><strong>${esc(t.team)}</strong></p>
 ${logo}
 </td></tr>
