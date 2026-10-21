@@ -459,9 +459,19 @@ exports.handler = async (event) => {
             sport, venueAddress, goodToKnow, pageUrl,
         } = JSON.parse(event.body || "{}")
 
-        if (!camp || !Array.isArray(children) || children.length === 0 || !contact) {
+        // ★ A booking has camp children, trip guests, or both. Trip tickets
+        // only (Trip_Booking_form) = no children and at least one guest.
+        const guestList = Array.isArray(tripGuests) ? tripGuests : []
+        if (!camp || !Array.isArray(children) || !contact) {
             return json(400, { error: "Missing camp, children, or contact details" })
         }
+        if (children.length === 0 && guestList.length === 0) {
+            return json(400, { error: "Missing camp, children, or contact details" })
+        }
+        if (guestList.some((g) => !g || !String(g.firstName || "").trim() || !String(g.lastName || "").trim())) {
+            return json(400, { error: "Missing trip guest name" })
+        }
+        const tripOnly = children.length === 0
         if (!contact.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(contact.email))) {
             return json(400, { error: "A valid contact email is required" })
         }
@@ -476,7 +486,8 @@ exports.handler = async (event) => {
         // ★ The two required declarations (Terms; photos and videos) are
         // checked here too, not only in the form, so a booking can never be
         // created without them.
-        if (!consents || consents.terms !== true || consents.photosWhatsapp !== true) {
+        // Trip tickets only: no child takes part, so only the Terms apply.
+        if (!consents || consents.terms !== true || (!tripOnly && consents.photosWhatsapp !== true)) {
             return json(400, { error: "consentRequired" })
         }
 
@@ -501,7 +512,7 @@ exports.handler = async (event) => {
 
         const heardAboutUs = referralText(referral)
 
-        const guests = Array.isArray(tripGuests) ? tripGuests : []
+        const guests = guestList
         const bookingId = randomUUID()
         const sheets = await getSheet()
         const allRows = await getAllRows(sheets)
@@ -510,7 +521,9 @@ exports.handler = async (event) => {
         // expired, inactive, used-up or made-up code never gets through.
         let appliedCode = ""
         let freeTicketCode = false
-        if (normaliseCode(discountCode)) {
+        // Codes only apply to camp fees, so a trip-only booking ignores them
+        // (and never uses up a limited code).
+        if (!tripOnly && normaliseCode(discountCode)) {
             const found = await lookupDiscount(sheets, discountCode, allRows)
             if (!found) {
                 return json(400, { error: "invalidDiscountCode" })
@@ -586,7 +599,9 @@ exports.handler = async (event) => {
             ROLE_JOINER,
             location || "", dateRange || "", ageRange || "",
             bookingReference, startDate || "", endDate || "",
-            "",
+            // ★ Column Z ("Position" for children) holds the trip ticket
+            // type for trip guests: Adult or Child.
+            String(guest.ticketType || "").trim().toLowerCase() === "child" ? "Child" : "Adult",
             appliedCode,
             heardAboutUs,
         ])
