@@ -782,6 +782,9 @@ exports.handler = async () => {
         for (const [bookingId, group] of bookings) {
             const participants = group.filter((r) => (r[COL.role] || ROLE_PARTICIPANT) === ROLE_PARTICIPANT)
             const guests = group.filter((r) => r[COL.role] === ROLE_JOINER)
+            // Trip tickets only: the camp info (drop-off, what to bring,
+            // WhatsApp group) is for camp families, so none is sent.
+            if (!participants.length) continue
             const first = participants[0] || group[0]
             const status = String(first[COL.status] || "").toLowerCase()
             if (!SENDABLE_STATUSES.includes(status)) continue
