@@ -402,6 +402,7 @@ exports.handler = async () => {
         const due = []
         for (const [bookingId, group] of bookings) {
             const participants = group.filter((r) => (r[COL.role] || ROLE_PARTICIPANT) === ROLE_PARTICIPANT)
+            if (!participants.length) continue // trip tickets only: no camp feedback
             const first = participants[0] || group[0]
             if (!SENDABLE_STATUSES.includes(String(first[COL.status] || "").toLowerCase())) continue
             if (group.some((r) => String(r[COL.feedbackSent] || "").trim())) continue // already sent
@@ -471,6 +472,7 @@ exports.handler = async () => {
             const reminders = []
             for (const [bookingId, group] of bookings) {
                 const participants = group.filter((r) => (r[COL.role] || ROLE_PARTICIPANT) === ROLE_PARTICIPANT)
+                if (!participants.length) continue // trip tickets only
                 const first = participants[0] || group[0]
                 if (!SENDABLE_STATUSES.includes(String(first[COL.status] || "").toLowerCase())) continue
                 if (answered.has(bookingId)) continue
