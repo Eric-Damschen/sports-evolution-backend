@@ -17,10 +17,10 @@ const COL = {
     meals: 11, parentName: 12, email: 13, phone: 14, bookingTotal: 15,
     status: 16, language: 17, role: 18,
     venue: 19, campDateRange: 20, ageRange: 21,
-    bookingReference: 22, startDate: 23, endDate: 24,
+    bookingReference: 22, startDate: 23, endDate: 24, ticketType: 25,
 }
 const SHEET_TAB = process.env.GOOGLE_SHEET_TAB || "Bookings"
-const DATA_RANGE = `${SHEET_TAB}!A:Y`
+const DATA_RANGE = `${SHEET_TAB}!A:Z`
 
 const ROLE_PARTICIPANT = "Participant"
 const ROLE_JOINER = "Joiner"
@@ -138,6 +138,8 @@ exports.handler = async (event) => {
             tripGuests: joinerRows.map((row) => ({
                 firstName: row[COL.firstName],
                 lastName: row[COL.lastName],
+                // "Adult" or "Child" (column Z); empty on older bookings.
+                ticketType: row[COL.ticketType] || "",
                 price: toNumber(row[COL.bookingTotal], 0),
             })),
         })
