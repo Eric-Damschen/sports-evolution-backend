@@ -218,6 +218,7 @@ async function readBooking(sheets, bookingId) {
     const group = (res.data.values || []).slice(1).filter((r) => r[B.bookingId] === bookingId)
     if (!group.length) return null
     const participants = group.filter((r) => (r[B.role] || ROLE_PARTICIPANT) === ROLE_PARTICIPANT)
+    if (!participants.length) return null // trip tickets only: no camp feedback
     const first = participants[0] || group[0]
     if (!VALID_STATUSES.includes(String(first[B.status] || "").toLowerCase())) return null
     const camp = String(first[B.camp] || "").trim()
