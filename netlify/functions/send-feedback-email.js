@@ -148,7 +148,9 @@ const T = {
         hint: "Tap a star. The feedback takes less than 1 minute.",
         low: "Not really", high: "Loved it!",
         star: (n) => `${n} ${n === 1 ? "star" : "stars"}`,
-        outro: "Thank you for your trust — see you at the next camp!",
+        alertsTitle: (loc) => `New camps in ${loc}`,
+        alertsText: "Tick the box in the feedback form and we'll email you as soon as a new camp opens there.",
+        outro: "Thank you for your trust. See you at the next camp!",
         reminderSubject: (loc) => `A minute for the ${loc} camp?`,
         reminderHeading: "Do you have a minute?",
         reminderIntro: (loc) => `Your feedback on the camp in ${loc} helps our coaches make every camp even better.`,
@@ -164,7 +166,9 @@ const T = {
         hint: "Touchez une étoile. Cela prend moins d'1 minute.",
         low: "Pas vraiment", high: "Adoré !",
         star: (n) => `${n} ${n === 1 ? "étoile" : "étoiles"}`,
-        outro: "Merci pour votre confiance — à bientôt au prochain stage !",
+        alertsTitle: (loc) => `Nouveaux stages à ${loc}`,
+        alertsText: "Cochez la case dans le formulaire et nous vous écrirons dès qu'un nouveau stage y ouvre.",
+        outro: "Merci pour votre confiance. À bientôt au prochain stage !",
         reminderSubject: (loc) => `Une minute pour le stage à ${loc} ?`,
         reminderHeading: "Vous avez une minute ?",
         reminderIntro: (loc) => `Votre avis sur le stage à ${loc} aide nos coachs à rendre chaque stage encore meilleur.`,
@@ -180,7 +184,9 @@ const T = {
         hint: "Tippen Sie auf einen Stern. Das Feedback dauert weniger als 1 Minute.",
         low: "Nicht wirklich", high: "Begeistert!",
         star: (n) => `${n} ${n === 1 ? "Stern" : "Sterne"}`,
-        outro: "Danke für Ihr Vertrauen — bis zum nächsten Camp!",
+        alertsTitle: (loc) => `Neue Camps in ${loc}`,
+        alertsText: "Setzen Sie im Formular das Häkchen und wir schreiben Ihnen, sobald dort ein neues Camp öffnet.",
+        outro: "Danke für Ihr Vertrauen. Bis zum nächsten Camp!",
         reminderSubject: (loc) => `Eine Minute für das Camp in ${loc}?`,
         reminderHeading: "Haben Sie eine Minute?",
         reminderIntro: (loc) => `Ihr Feedback zum Camp in ${loc} hilft unseren Trainern, jedes Camp noch besser zu machen.`,
@@ -196,7 +202,9 @@ const T = {
         hint: "Toque numa estrela. O feedback demora menos de 1 minuto.",
         low: "Nem por isso", high: "Adorou!",
         star: (n) => `${n} ${n === 1 ? "estrela" : "estrelas"}`,
-        outro: "Obrigado pela sua confiança — até ao próximo campo!",
+        alertsTitle: (loc) => `Novos campos em ${loc}`,
+        alertsText: "Marque a caixa no formulário e enviamos-lhe um e-mail assim que abrir lá um novo campo.",
+        outro: "Obrigado pela sua confiança. Até ao próximo campo!",
         reminderSubject: (loc) => `Um minuto para o campo em ${loc}?`,
         reminderHeading: "Tem um minuto?",
         reminderIntro: (loc) => `A sua opinião sobre o campo em ${loc} ajuda os nossos treinadores a tornar cada campo ainda melhor.`,
@@ -214,6 +222,7 @@ function joinNames(names, and) {
 const C = {
     page: "#F2EFEA", card: "#FBFAF8", box: "#F7F4EF", border: "#E6E0D8",
     text: "#12110F", muted: "#5E5B57", yellow: "#F9B233",
+    yellowBox: "#FBF0DC", yellowBorder: "#FADDA9", amber: "#8A5C0A",
 }
 const FONT = "'IBM Plex Sans',Arial,Helvetica,sans-serif"
 const FONT_HEAD = "'Space Grotesk',Arial,Helvetica,sans-serif"
@@ -251,6 +260,10 @@ ${intro}
 <td align="center" style="padding:6px 0 0;font-size:11px;color:${C.muted};">${esc(t.high)}</td>
 </tr></table>
 </td></tr></table>
+${location ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:16px;background:${C.yellowBox};border:1px solid ${C.yellowBorder};border-radius:4px;"><tr><td style="padding:18px 20px;">
+<p style="margin:0 0 4px;font-family:${FONT_HEAD};font-size:18px;font-weight:bold;color:${C.text};">${esc(t.alertsTitle(location))}</p>
+<p style="margin:0;color:${C.amber};font-size:14px;">${esc(t.alertsText)}</p>
+</td></tr></table>` : ""}
 </td></tr>
 <tr><td style="padding:24px 28px 28px;">
 <p style="margin:0 0 16px;">${esc(t.outro)}</p>
