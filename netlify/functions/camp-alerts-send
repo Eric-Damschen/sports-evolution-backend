@@ -10,6 +10,10 @@
 // No new camp, no email. Camps already online when a family signed up are
 // skipped (they're in that family's "Camps notified" from the start).
 //
+// Column K ("Also announce") can list camps at OTHER locations for a family
+// (filled by camp-announce.js). Those camps are emailed once too, with
+// "New camp near you" wording.
+//
 // Only between 10:00 and 19:00 Luxembourg time, and only for camps that
 // haven't started yet. Each email has a one-click unsubscribe link.
 //
@@ -81,6 +85,11 @@ const T = {
         hi: (n) => (n ? `Hi ${n},` : "Hi,"),
         heading: (loc) => `New camp in ${loc}!`,
         intro: (sport, loc) => `You asked us to tell you first: a new ${sport ? `${sport} ` : ""}camp is now open for booking in ${loc}.`,
+        nearSubject: (loc, dates) => `New camp near you: ${loc}${dates ? `, ${dates}` : ""}`,
+        nearHeading: (loc) => `New camp near you: ${loc}!`,
+        nearIntro: (sport, loc, home) => home && home.toLowerCase() !== loc.toLowerCase()
+            ? `A new ${sport ? `${sport} ` : ""}camp is now open for booking in ${loc}, not far from ${home}.`
+            : `A new ${sport ? `${sport} ` : ""}camp is now open for booking in ${loc}.`,
         camp: "Camp", sportLabel: "Sport", dates: "Dates",
         button: "See the camp and book",
         note: "Places are limited, so it's worth booking early.",
@@ -95,6 +104,11 @@ const T = {
         hi: (n) => (n ? `Bonjour ${n},` : "Bonjour,"),
         heading: (loc) => `Nouveau stage à ${loc} !`,
         intro: (sport, loc) => `Vous nous avez demandé de vous prévenir : un nouveau stage${sport ? ` de ${sport}` : ""} est ouvert aux réservations à ${loc}.`,
+        nearSubject: (loc, dates) => `Nouveau stage près de chez vous : ${loc}${dates ? `, ${dates}` : ""}`,
+        nearHeading: (loc) => `Nouveau stage près de chez vous : ${loc} !`,
+        nearIntro: (sport, loc, home) => home && home.toLowerCase() !== loc.toLowerCase()
+            ? `Un nouveau stage${sport ? ` de ${sport}` : ""} est ouvert aux réservations à ${loc}, tout près de ${home}.`
+            : `Un nouveau stage${sport ? ` de ${sport}` : ""} est ouvert aux réservations à ${loc}.`,
         camp: "Stage", sportLabel: "Sport", dates: "Dates",
         button: "Voir le stage et réserver",
         note: "Les places sont limitées : mieux vaut réserver tôt.",
@@ -109,6 +123,11 @@ const T = {
         hi: (n) => (n ? `Hallo ${n},` : "Hallo,"),
         heading: (loc) => `Neues Camp in ${loc}!`,
         intro: (sport, loc) => `Sie wollten es als Erste wissen: In ${loc} ist ab sofort ein neues ${sport ? `${sport}-Camp` : "Camp"} buchbar.`,
+        nearSubject: (loc, dates) => `Neues Camp in Ihrer Nähe: ${loc}${dates ? `, ${dates}` : ""}`,
+        nearHeading: (loc) => `Neues Camp in Ihrer Nähe: ${loc}!`,
+        nearIntro: (sport, loc, home) => home && home.toLowerCase() !== loc.toLowerCase()
+            ? `In ${loc}, ganz in der Nähe von ${home}, ist ab sofort ein neues ${sport ? `${sport}-Camp` : "Camp"} buchbar.`
+            : `In ${loc} ist ab sofort ein neues ${sport ? `${sport}-Camp` : "Camp"} buchbar.`,
         camp: "Camp", sportLabel: "Sportart", dates: "Termin",
         button: "Camp ansehen und buchen",
         note: "Die Plätze sind begrenzt – frühes Buchen lohnt sich.",
@@ -123,6 +142,11 @@ const T = {
         hi: (n) => (n ? `Olá ${n},` : "Olá,"),
         heading: (loc) => `Novo campo em ${loc}!`,
         intro: (sport, loc) => `Pediu-nos para avisar primeiro: já pode reservar um novo campo${sport ? ` de ${sport}` : ""} em ${loc}.`,
+        nearSubject: (loc, dates) => `Novo campo perto de si: ${loc}${dates ? `, ${dates}` : ""}`,
+        nearHeading: (loc) => `Novo campo perto de si: ${loc}!`,
+        nearIntro: (sport, loc, home) => home && home.toLowerCase() !== loc.toLowerCase()
+            ? `Já pode reservar um novo campo${sport ? ` de ${sport}` : ""} em ${loc}, perto de ${home}.`
+            : `Já pode reservar um novo campo${sport ? ` de ${sport}` : ""} em ${loc}.`,
         camp: "Campo", sportLabel: "Desporto", dates: "Datas",
         button: "Ver o campo e reservar",
         note: "As vagas são limitadas, por isso vale a pena reservar cedo.",
@@ -151,7 +175,9 @@ function row(name, valueHtml, last) {
         `<td style="padding:12px 16px 12px 0;vertical-align:top;${line}">${valueHtml}</td></tr>`
 }
 
-function buildAlertEmail({ t, name, location, sportKey, start, end, lang, link, unsubscribeLink }) {
+// near: true = a camp at another location ("New camp near you"); home is the
+// family's own location (column D), used in the text and the footer.
+function buildAlertEmail({ t, name, location, sportKey, start, end, lang, link, unsubscribeLink, near = false, home = "" }) {
     const dates = dateRange(start, end, lang)
     const rows = [
         [t.camp, `<strong>${esc(location)}</strong>`],
@@ -168,8 +194,8 @@ function buildAlertEmail({ t, name, location, sportKey, start, end, lang, link, 
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:${C.card};border:1px solid ${C.border};border-radius:4px;font-family:${FONT};color:${C.text};font-size:15px;line-height:1.55;">
 <tr><td style="padding:28px 28px 0;">
 <p style="margin:0 0 14px;">${esc(t.hi(name))}</p>
-<h1 style="margin:0 0 10px;font-family:${FONT_HEAD};font-size:28px;line-height:1.2;font-weight:bold;letter-spacing:-0.01em;color:${C.text};">${esc(t.heading(location))}</h1>
-<p style="margin:0;color:${C.muted};">${esc(t.intro(t.sports[sportKey] || "", location))}</p>
+<h1 style="margin:0 0 10px;font-family:${FONT_HEAD};font-size:28px;line-height:1.2;font-weight:bold;letter-spacing:-0.01em;color:${C.text};">${esc(near ? t.nearHeading(location) : t.heading(location))}</h1>
+<p style="margin:0;color:${C.muted};">${esc(near ? t.nearIntro(t.sports[sportKey] || "", location, home) : t.intro(t.sports[sportKey] || "", location))}</p>
 </td></tr>
 <tr><td style="padding:24px 28px 0;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.box};border:1px solid ${C.border};border-radius:4px;font-size:15px;">${details}</table>
@@ -181,7 +207,7 @@ function buildAlertEmail({ t, name, location, sportKey, start, end, lang, link, 
 <tr><td style="padding:24px 28px 28px;">
 <p style="margin:0;">${esc(t.signOff)}<br><strong>${esc(t.team)}</strong></p>
 ${logo}
-<p style="margin:24px 0 0;color:${C.muted};font-size:12px;line-height:1.5;">${esc(t.why(location))} <a href="${esc(unsubscribeLink)}" style="color:${C.muted};">${esc(t.unsubscribe)}</a></p>
+<p style="margin:24px 0 0;color:${C.muted};font-size:12px;line-height:1.5;">${esc(t.why(near && home ? home : location))} <a href="${esc(unsubscribeLink)}" style="color:${C.muted};">${esc(t.unsubscribe)}</a></p>
 </td></tr>
 </table>
 </td></tr></table>
@@ -259,7 +285,7 @@ exports.handler = async () => {
     }
     try {
         const sheets = getSheets()
-        const subs = await read(sheets, `'${TAB}'!A:J`)
+        const subs = await read(sheets, `'${TAB}'!A:K`)
         if (!subs) return { statusCode: 200, body: "no tab" }
         const active = subs.slice(1).filter((r) => norm(r[A.status]) === "Active" && norm(r[A.email]))
         if (!active.length) return { statusCode: 200, body: JSON.stringify({ sent: 0 }) }
@@ -269,18 +295,36 @@ exports.handler = async () => {
         const details = ((await read(sheets, `'${DETAILS_TAB}'!A:G`)) || []).slice(1)
 
         const due = []
+        const planned = new Set() // email + camp: one email per family per camp
+        // Camps each family (email) was already told about, over ALL its
+        // rows, so a family with two rows never gets the same camp twice.
+        const told = new Map()
+        for (const r of subs.slice(1)) {
+            const email = lower(r[A.email])
+            if (!email) continue
+            if (!told.has(email)) told.set(email, new Set())
+            for (const k of norm(r[A.notified]).split("\n").map(norm).filter(Boolean)) told.get(email).add(k)
+        }
         for (const camp of camps) {
             const key = norm(camp[0])
             const parts = alerts.campParts(key)
             const location = norm(camp[2]) || key.replace(/\s*\(.*$/, "")
             const sportKey = lower(camp[3]) || parts.sport
             for (const s of active) {
-                if (lower(s[A.location]) !== lower(location) && lower(s[A.location]) !== parts.location) continue
-                if (norm(s[A.sport]) && lower(s[A.sport]) !== sportKey) continue
-                const notified = norm(s[A.notified]).split("\n").map(norm)
-                if (notified.includes(key)) continue
+                const sameLocation = lower(s[A.location]) === lower(location) || lower(s[A.location]) === parts.location
+                const sportOk = !norm(s[A.sport]) || lower(s[A.sport]) === sportKey
+                const announced = norm(s[A.announce]).split("\n").map(norm).includes(key)
+                if (!(sameLocation && sportOk) && !announced) continue
+                if ((told.get(lower(s[A.email])) || new Set()).has(key)) continue
+                const once = `${lower(s[A.email])}|${key}`
+                if (planned.has(once)) continue
+                planned.add(once)
                 const page = norm((details.find((d) => norm(d[0]) === key) || [])[6])
-                due.push({ s, key, location, sportKey, start: norm(camp[4]), end: norm(camp[5]), link: /^https:\/\//.test(page) ? page : `${SITE_URL}/camps` })
+                due.push({
+                    s, key, location, sportKey, start: norm(camp[4]), end: norm(camp[5]),
+                    link: /^https:\/\//.test(page) ? page : `${SITE_URL}/camps`,
+                    near: !(sameLocation && sportOk),
+                })
             }
         }
 
@@ -304,8 +348,12 @@ exports.handler = async () => {
                 lang,
                 link: d.link,
                 unsubscribeLink,
+                near: d.near,
+                home: norm(d.s[A.location]),
             })
-            const subject = t.subject(d.location, dateRange(d.start, d.end, lang))
+            const subject = d.near
+                ? t.nearSubject(d.location, dateRange(d.start, d.end, lang))
+                : t.subject(d.location, dateRange(d.start, d.end, lang))
             if (DRY_RUN) {
                 console.log(`[camp-alerts] DRY RUN — would send "${subject}" to ${email}`)
                 sent++
