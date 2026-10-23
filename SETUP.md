@@ -292,6 +292,24 @@ is signed with `FEEDBACK_SECRET`.
 
 Test: `…/api/send-test-emails?key=<word>&type=alert`.
 
+### Announce a camp to nearby locations (camp-announce.js)
+
+To tell families at other locations about one camp, once (e.g. the Mamer
+football camp for Strassen and Kehlen football families), open:
+
+    https://<your-netlify-site>/api/camp-announce?key=<TEST_EMAIL_KEY>&camp=Mamer&to=Strassen,Kehlen&sport=football
+
+- Without `&go=1`: preview only (who would get the email). Nothing is written.
+- With `&go=1`: the camp is written into column K ("Also announce") of those
+  rows. camp-alerts-send.js then emails each family once ("New camp near
+  you"), between 10:00 and 19:00, about 25 every 15 minutes, and adds the
+  camp to column J.
+- `camp` = the name in Overview column A, or just the location when there is
+  one upcoming camp there. `sport` is optional; rows with an empty sport are
+  always included.
+- Only "Active" rows; families already told (J) or queued (K) are skipped. A
+  family with several rows gets one email.
+
 ## Year tabs
 
 `update-overview` runs every 15 minutes and only reads the Bookings tab.
