@@ -63,6 +63,11 @@
   to = "/.netlify/functions/camp-alerts"
   status = 200
 
+[[redirects]]
+  from = "/api/camp-announce"
+  to = "/.netlify/functions/camp-announce"
+  status = 200
+
 # Test emails to info@ (only when TEST_EMAIL_KEY is set in Netlify and the
 # link carries that key): ?key=…&type=confirmation|info|feedback&lang=en|fr|de|pt
 [[redirects]]
