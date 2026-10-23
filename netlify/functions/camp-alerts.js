@@ -11,8 +11,10 @@
 //
 // "Camp alerts" tab of the bookings sheet (created by the code if missing):
 //   A Email | B First name | C Surname | D Location | E Sport | F Language |
-//   G Source | H Signed up | I Status | J Camps notified
+//   G Source | H Signed up | I Status | J Camps notified | K Also announce
 // One row per email + location + sport. Status "Active" or "Unsubscribed".
+// K (optional) lists camps at OTHER locations this family should hear about
+// once, e.g. a Mamer camp for Strassen families. Filled by camp-announce.js.
 // J lists the camps this family has been told about. At sign-up it already
 // holds the camps that are online at that moment, so only camps that open
 // later trigger an email (camp-alerts-send.js).
@@ -24,8 +26,8 @@ const { google } = require("googleapis")
 const crypto = require("crypto")
 
 const TAB = "Camp alerts"
-const HEADER = ["Email", "First name", "Surname", "Location", "Sport", "Language", "Source", "Signed up", "Status", "Camps notified"]
-const A = { email: 0, first: 1, surname: 2, location: 3, sport: 4, lang: 5, source: 6, signedUp: 7, status: 8, notified: 9 }
+const HEADER = ["Email", "First name", "Surname", "Location", "Sport", "Language", "Source", "Signed up", "Status", "Camps notified", "Also announce"]
+const A = { email: 0, first: 1, surname: 2, location: 3, sport: 4, lang: 5, source: 6, signedUp: 7, status: 8, notified: 9, announce: 10 }
 const CAMPS_TAB = process.env.CAMPS_TAB || "Overview"
 const SPORTS = ["football", "basketball", "volleyball"]
 const LANGS = ["en", "fr", "de", "pt"]
@@ -114,11 +116,11 @@ async function ensureTab(sheets) {
             if (!/already exists/i.test(String(err.message))) throw err
         }
     }
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${TAB}'!A1:J1` })
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${TAB}'!A1:K1` })
     const head = (res.data.values || [])[0] || []
     if (HEADER.some((h, i) => norm(head[i]) !== h)) {
         await sheets.spreadsheets.values.update({
-            spreadsheetId, range: `'${TAB}'!A1:J1`, valueInputOption: "RAW", requestBody: { values: [HEADER] },
+            spreadsheetId, range: `'${TAB}'!A1:K1`, valueInputOption: "RAW", requestBody: { values: [HEADER] },
         })
     }
 }
@@ -187,7 +189,7 @@ async function subscribe(sheets, info) {
     }
     row[A.notified] = known.join("\n")
     await sheets.spreadsheets.values.append({
-        spreadsheetId, range: `'${TAB}'!A:J`, valueInputOption: "RAW", insertDataOption: "INSERT_ROWS", requestBody: { values: [row] },
+        spreadsheetId, range: `'${TAB}'!A:K`, valueInputOption: "RAW", insertDataOption: "INSERT_ROWS", requestBody: { values: [row] },
     })
     return "added"
 }
@@ -306,4 +308,4 @@ exports.handler = async (event) => {
 }
 
 // Used by feedback.js, camp-alerts-send.js and tests.
-exports._internal = { subscribe, unsubscribe, unsubscribeUrl, unsubscribeCode, emailFromCode, campParts, TAB, A, HEADER }
+exports._internal = { subscribe, unsubscribe, unsubscribeUrl, unsubscribeCode, emailFromCode, campParts, ensureTab, TAB, A, HEADER }
