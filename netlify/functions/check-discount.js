@@ -58,7 +58,10 @@ function holdsASeat(row) {
 // - Percent off: 10 or 10% (a percentage of the camp fees, after the
 //   multichild discount), or FREE = one camp ticket free. With FREE, the
 //   other children in the booking pay as normal; add-ons and trip tickets
-//   are always paid.
+//   are paid, unless the code adds them:
+//     FREE + lunch + clothing   → child 1's ticket, lunch and one clothing
+//                                 set free (bottle: add "+ bottle")
+//   The words may be in any order and case; "meals" works for lunch.
 // - Active: "Yes" or a ticked checkbox. Anything else, blank included, = off.
 // - Valid until (optional): last day the code works. Write it as 2027-08-31;
 //   31/08/2027 and 31.08.2027 also work. Blank = no end date.
@@ -152,7 +155,14 @@ async function lookupDiscount(sheets, rawCode, bookingRows) {
         if (used.size >= maxUses) return null
     }
 
-    return { code, percent, freeTicket }
+    // FREE + lunch / clothing / bottle: those add-ons of child 1 are free too.
+    const words = String(row[1] || "").toLowerCase()
+    return {
+        code, percent, freeTicket,
+        freeMeals: freeTicket && /lunch|meal/.test(words),
+        freeClothing: freeTicket && /cloth|kit/.test(words),
+        freeBottle: freeTicket && /bottle/.test(words),
+    }
 }
 
 exports.handler = async (event) => {
@@ -181,6 +191,9 @@ exports.handler = async (event) => {
             code: found.code,
             percent: found.percent,
             freeTicket: found.freeTicket,
+            freeMeals: found.freeMeals,
+            freeClothing: found.freeClothing,
+            freeBottle: found.freeBottle,
         })
     } catch (err) {
         console.error("[check-discount] failed:", err)
