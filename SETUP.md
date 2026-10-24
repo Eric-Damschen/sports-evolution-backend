@@ -120,9 +120,11 @@ A second tab named exactly **`Discount codes`**, headers in row 1:
 |---|---|---|---|---|
 | SUMMER10 | 10 | Yes | 2027-08-31 | 50 |
 | GIFT-7K3Q | FREE | Yes | | 1 |
+| KID-FREE-X7 | FREE + lunch + clothing | Yes | | 1 |
 
 - **Percent off**: 10 or 10%, taken off the camp fees after the multichild discount. Add-ons and trip tickets are never discounted.
 - **FREE** in the Percent off column makes one camp ticket free (the first child's camp fee, after the multichild discount). Other children, add-ons and trip tickets are still paid. If the total ends up €0, the parent still goes through Stripe Checkout without entering a card; the webhook, email, sheet and confirmation page work as usual (Stripe shows it as "no payment required").
+- **FREE + lunch + clothing** also makes the first child's lunch and one clothing set (the first, full-price set) free. Add `+ bottle` for one drinking bottle. The words can be in any order; `meals` works for lunch. The parent still has to choose lunch and the clothing size in the Add-ons step; if they haven't, the Payment step reminds them. Extra sets, extra children and trip tickets are paid.
 - A €0 booking is only accepted with a valid FREE code. Use **Max uses = 1** for single-use gift codes.
 - **Active**: `Yes` (or a ticked checkbox). Anything else, blank included, switches the code off.
 - **Valid until** (optional): last day the code works. Write dates as `2027-08-31`.
