@@ -2,6 +2,11 @@
 //
 // Self-contained on purpose: no shared module to misplace.
 // GET /api/camp-availability?camp=NAME&capacity=48&tripCapacity=20
+// GET /api/camp-availability?all=1
+//     → { camps: { "<camp name, lower case>": { booked, tripBooked } } }
+//     One answer for every camp, cached by Netlify for 60 seconds. Used by
+//     the Places_left component, so a page with many camps reads the Sheet
+//     about once a minute in total.
 //
 // Called by BOTH Booking_form.tsx and Trip_Booking_form.tsx on page load.
 // Response keys are unchanged: { capacity, booked, remaining } plus
@@ -90,7 +95,34 @@ exports.handler = async (event) => {
         return json(405, { error: "Method not allowed" })
     }
 
-    const { camp, capacity, tripCapacity } = event.queryStringParameters || {}
+    const { camp, capacity, tripCapacity, all } = event.queryStringParameters || {}
+
+    if (all === "1") {
+        try {
+            const sheets = await getSheet()
+            const result = await sheets.spreadsheets.values.get({
+                spreadsheetId: process.env.GOOGLE_SHEET_ID,
+                range: DATA_RANGE,
+            })
+            const camps = {}
+            for (const row of (result.data.values || []).slice(1)) {
+                const key = String(row[COL.camp] || "").trim().toLowerCase()
+                if (!key || !holdsASeat(row)) continue
+                const c = camps[key] || (camps[key] = { booked: 0, tripBooked: 0 })
+                if ((row[COL.role] || ROLE_PARTICIPANT) === ROLE_JOINER) c.tripBooked += 1
+                else c.booked += 1
+            }
+            return json(200, { camps, updatedAt: new Date().toISOString() }, {
+                // Browsers keep it 30 s; Netlify's CDN shares it for 60 s.
+                "Cache-Control": "public, max-age=30",
+                "Netlify-CDN-Cache-Control": "public, s-maxage=60, stale-while-revalidate=60",
+            })
+        } catch (err) {
+            console.error("[camp-availability] all failed:", err)
+            return json(500, { error: "Could not check availability" })
+        }
+    }
+
     if (!camp || !capacity) {
         return json(400, { error: "Missing camp or capacity query param" })
     }
