@@ -3,7 +3,8 @@
 // Self-contained on purpose: no shared module to misplace.
 // GET /api/camp-availability?camp=NAME&capacity=48&tripCapacity=20
 // GET /api/camp-availability?all=1
-//     → { camps: { "<camp name, lower case>": { booked, tripBooked } } }
+//     → { camps: { "<camp name, lower case>": { booked, tripBooked } },
+//         list: [{ camp, location, sport, start, booked }] }   (Overview tab)
 //     One answer for every camp, cached by Netlify for 60 seconds. Used by
 //     the Places_left component, so a page with many camps reads the Sheet
 //     about once a minute in total.
@@ -112,7 +113,32 @@ exports.handler = async (event) => {
                 if ((row[COL.role] || ROLE_PARTICIPANT) === ROLE_JOINER) c.tripBooked += 1
                 else c.booked += 1
             }
-            return json(200, { camps, updatedAt: new Date().toISOString() }, {
+            // The camps in the "Overview" tab, so a page can find its camp by
+            // location + start date alone.
+            let list = []
+            try {
+                const ov = await sheets.spreadsheets.values.get({
+                    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+                    range: `'${process.env.CAMPS_TAB || "Overview"}'!A:F`,
+                })
+                list = (ov.data.values || []).slice(1)
+                    .filter((r) => String(r[0] || "").trim())
+                    .map((r) => {
+                        const name = String(r[0]).trim()
+                        const c = camps[name.toLowerCase()] || { booked: 0, tripBooked: 0 }
+                        return {
+                            camp: name,
+                            location: String(r[2] || "").trim(),
+                            sport: String(r[3] || "").trim().toLowerCase(),
+                            start: String(r[4] || "").trim(),
+                            booked: c.booked,
+                            tripBooked: c.tripBooked,
+                        }
+                    })
+            } catch (e) {
+                console.error("[camp-availability] could not read Overview:", e.message)
+            }
+            return json(200, { camps, list, updatedAt: new Date().toISOString() }, {
                 // Browsers keep it 30 s; Netlify's CDN shares it for 60 s.
                 "Cache-Control": "public, max-age=30",
                 "Netlify-CDN-Cache-Control": "public, s-maxage=60, stale-while-revalidate=60",
