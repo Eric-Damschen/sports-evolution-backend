@@ -266,7 +266,38 @@ function todayInLuxembourg() {
     }).format(new Date())
 }
 
-// Returns { code, percent, freeTicket } when usable, otherwise null.
+// Column B of "Discount codes", read part by part (split at "+"):
+//   10 or 10%            percentage off the camp fees
+//   20€ / €20 / 20 eur   fixed amount off the camp fees (once per booking)
+//   FREE                 one camp ticket free (child 1)
+//   lunch / clothing / bottle   that add-on free: with FREE for child 1,
+//                        otherwise for the first child who chose it
+//                        (one clothing set, the first, full-price one)
+// Examples: "10", "FREE", "FREE + lunch + clothing", "clothing + 20€".
+// Returns null when nothing usable is found.
+function parseDiscountValue(raw) {
+    const s = String(raw || "").toLowerCase()
+    const freeTicket = /^\s*free/.test(s)
+    const freeMeals = /lunch|meal/.test(s)
+    const freeClothing = /cloth|kit/.test(s)
+    const freeBottle = /bottle/.test(s)
+    let percent = 0
+    let amountOff = 0
+    for (const part of s.split("+")) {
+        const p = part.trim()
+        const m = p.match(/^(€\s*)?(\d+(?:[.,]\d+)?)\s*(%|€|eur|euros?)?$/)
+        if (!m) continue
+        const n = parseFloat(m[2].replace(",", "."))
+        if (!(n > 0)) continue
+        if (m[1] || /€|eur/.test(m[3] || "")) amountOff = Math.min(n, 1000)
+        else if (n <= 100) percent = n
+    }
+    if (freeTicket) percent = 0
+    const usable = freeTicket || percent > 0 || amountOff > 0 || freeMeals || freeClothing || freeBottle
+    return usable ? { freeTicket, percent, amountOff, freeMeals, freeClothing, freeBottle } : null
+}
+
+// Returns { code, percent, freeTicket, ... } when usable, otherwise null.
 // bookingRows = Bookings rows as { rowNumber, data }, used to count uses.
 async function lookupDiscount(sheets, rawCode, bookingRows) {
     const code = normaliseCode(rawCode)
@@ -287,10 +318,9 @@ async function lookupDiscount(sheets, rawCode, bookingRows) {
     const row = values.find((r) => normaliseCode(r[0]) === code)
     if (!row) return null
 
-    const freeTicket = /^\s*free/i.test(String(row[1] || ""))
-    const percent = freeTicket ? 0 : parsePercent(row[1])
-    if (!freeTicket && !percent) {
-        console.error(`[discount] ${code}: "${row[1]}" is neither FREE nor a number between 0 and 100`)
+    const value = parseDiscountValue(row[1])
+    if (!value) {
+        console.error(`[discount] ${code}: "${row[1]}" is not a discount this system understands`)
         return null
     }
 
@@ -313,7 +343,7 @@ async function lookupDiscount(sheets, rawCode, bookingRows) {
         if (used.size >= maxUses) return null
     }
 
-    return { code, percent, freeTicket }
+    return { code, ...value }
 }
 
 /* ---------------- Helpers ---------------- */
@@ -440,7 +470,7 @@ function stripeLocale(language) {
 /* ---------------- Handler ---------------- */
 
 const MAX_TOTAL_EUR = toNumber(process.env.MAX_BOOKING_TOTAL_EUR, 5000)
-const CONFIRMATION_PATH = process.env.CONFIRMATION_PATH || "/confirmation-page"
+const CONFIRMATION_PATH = process.env.CONFIRMATION_PATH || "/confirmation"
 
 exports.handler = async (event) => {
     if (event.httpMethod === "OPTIONS") {
