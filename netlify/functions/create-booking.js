@@ -214,7 +214,7 @@ function countBookedSpots(allRows, camp, role, beforeRowNumber) {
 
 /* ---------------- Discount codes ---------------- */
 // Codes live in the private "Discount codes" tab of the Sheet, row 1 = headers:
-//   A Code | B Percent off | C Active | D Valid until | E Max uses
+//   A Code | B Percent off | C Active | D Valid until | E Max uses | F Club only
 //   SUMMER10 | 10 | Yes | 2027-08-31 | 50
 // - Percent off: 10 or 10% (a percentage of the camp fees, after the
 //   multichild discount), or FREE = one camp ticket free. With FREE, the
@@ -297,6 +297,11 @@ function parseDiscountValue(raw) {
     return usable ? { freeTicket, percent, amountOff, freeMeals, freeClothing, freeBottle } : null
 }
 
+// Club names compared without case, accents or extra spaces.
+function clubKey(v) {
+    return String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase()
+}
+
 // Returns { code, percent, freeTicket, ... } when usable, otherwise null.
 // bookingRows = Bookings rows as { rowNumber, data }, used to count uses.
 async function lookupDiscount(sheets, rawCode, bookingRows) {
@@ -307,7 +312,7 @@ async function lookupDiscount(sheets, rawCode, bookingRows) {
     try {
         const res = await sheets.spreadsheets.values.get({
             spreadsheetId: process.env.GOOGLE_SHEET_ID,
-            range: `'${DISCOUNT_TAB.replace(/'/g, "''")}'!A2:E`,
+            range: `'${DISCOUNT_TAB.replace(/'/g, "''")}'!A2:F`,
         })
         values = res.data.values || []
     } catch (err) {
@@ -343,7 +348,8 @@ async function lookupDiscount(sheets, rawCode, bookingRows) {
         if (used.size >= maxUses) return null
     }
 
-    return { code, ...value }
+    // F (optional): the code only works for a child of this club.
+    return { code, ...value, clubOnly: String(row[5] || "").trim() }
 }
 
 /* ---------------- Helpers ---------------- */
@@ -557,6 +563,10 @@ exports.handler = async (event) => {
             const found = await lookupDiscount(sheets, discountCode, allRows)
             if (!found) {
                 return json(400, { error: "invalidDiscountCode" })
+            }
+            // A club code needs at least one child from that club.
+            if (found.clubOnly && !children.some((c) => clubKey(c && c.club) === clubKey(found.clubOnly))) {
+                return json(400, { error: "clubOnlyCode", club: found.clubOnly })
             }
             appliedCode = found.code
             freeTicketCode = found.freeTicket === true
