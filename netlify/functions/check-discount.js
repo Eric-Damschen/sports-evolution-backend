@@ -53,7 +53,7 @@ function holdsASeat(row) {
 
 /* ---------------- Discount codes ---------------- */
 // Codes live in the private "Discount codes" tab of the Sheet, row 1 = headers:
-//   A Code | B Percent off | C Active | D Valid until | E Max uses
+//   A Code | B Percent off | C Active | D Valid until | E Max uses | F Club only
 //   SUMMER10 | 10 | Yes | 2027-08-31 | 50
 // - Percent off: 10 or 10% (a percentage of the camp fees, after the
 //   multichild discount), or FREE = one camp ticket free. With FREE, the
@@ -108,7 +108,43 @@ function todayInLuxembourg() {
     }).format(new Date())
 }
 
-// Returns { code, percent, freeTicket } when usable, otherwise null.
+// Column B of "Discount codes", read part by part (split at "+"):
+//   10 or 10%            percentage off the camp fees
+//   20€ / €20 / 20 eur   fixed amount off the camp fees (once per booking)
+//   FREE                 one camp ticket free (child 1)
+//   lunch / clothing / bottle   that add-on free: with FREE for child 1,
+//                        otherwise for the first child who chose it
+//                        (one clothing set, the first, full-price one)
+// Examples: "10", "FREE", "FREE + lunch + clothing", "clothing + 20€".
+// Returns null when nothing usable is found.
+function parseDiscountValue(raw) {
+    const s = String(raw || "").toLowerCase()
+    const freeTicket = /^\s*free/.test(s)
+    const freeMeals = /lunch|meal/.test(s)
+    const freeClothing = /cloth|kit/.test(s)
+    const freeBottle = /bottle/.test(s)
+    let percent = 0
+    let amountOff = 0
+    for (const part of s.split("+")) {
+        const p = part.trim()
+        const m = p.match(/^(€\s*)?(\d+(?:[.,]\d+)?)\s*(%|€|eur|euros?)?$/)
+        if (!m) continue
+        const n = parseFloat(m[2].replace(",", "."))
+        if (!(n > 0)) continue
+        if (m[1] || /€|eur/.test(m[3] || "")) amountOff = Math.min(n, 1000)
+        else if (n <= 100) percent = n
+    }
+    if (freeTicket) percent = 0
+    const usable = freeTicket || percent > 0 || amountOff > 0 || freeMeals || freeClothing || freeBottle
+    return usable ? { freeTicket, percent, amountOff, freeMeals, freeClothing, freeBottle } : null
+}
+
+// Club names compared without case, accents or extra spaces.
+function clubKey(v) {
+    return String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase()
+}
+
+// Returns { code, percent, freeTicket, ... } when usable, otherwise null.
 // bookingRows = Bookings rows as { rowNumber, data }, used to count uses.
 async function lookupDiscount(sheets, rawCode, bookingRows) {
     const code = normaliseCode(rawCode)
@@ -118,7 +154,7 @@ async function lookupDiscount(sheets, rawCode, bookingRows) {
     try {
         const res = await sheets.spreadsheets.values.get({
             spreadsheetId: process.env.GOOGLE_SHEET_ID,
-            range: `'${DISCOUNT_TAB.replace(/'/g, "''")}'!A2:E`,
+            range: `'${DISCOUNT_TAB.replace(/'/g, "''")}'!A2:F`,
         })
         values = res.data.values || []
     } catch (err) {
@@ -129,10 +165,9 @@ async function lookupDiscount(sheets, rawCode, bookingRows) {
     const row = values.find((r) => normaliseCode(r[0]) === code)
     if (!row) return null
 
-    const freeTicket = /^\s*free/i.test(String(row[1] || ""))
-    const percent = freeTicket ? 0 : parsePercent(row[1])
-    if (!freeTicket && !percent) {
-        console.error(`[discount] ${code}: "${row[1]}" is neither FREE nor a number between 0 and 100`)
+    const value = parseDiscountValue(row[1])
+    if (!value) {
+        console.error(`[discount] ${code}: "${row[1]}" is not a discount this system understands`)
         return null
     }
 
@@ -155,14 +190,8 @@ async function lookupDiscount(sheets, rawCode, bookingRows) {
         if (used.size >= maxUses) return null
     }
 
-    // FREE + lunch / clothing / bottle: those add-ons of child 1 are free too.
-    const words = String(row[1] || "").toLowerCase()
-    return {
-        code, percent, freeTicket,
-        freeMeals: freeTicket && /lunch|meal/.test(words),
-        freeClothing: freeTicket && /cloth|kit/.test(words),
-        freeBottle: freeTicket && /bottle/.test(words),
-    }
+    // F (optional): the code only works for a child of this club.
+    return { code, ...value, clubOnly: String(row[5] || "").trim() }
 }
 
 exports.handler = async (event) => {
@@ -174,6 +203,8 @@ exports.handler = async (event) => {
     }
 
     const code = normaliseCode((event.queryStringParameters || {}).code)
+    // The children's clubs (separated by "|"), for codes limited to one club.
+    const clubs = String((event.queryStringParameters || {}).clubs || "").split("|").map(clubKey).filter(Boolean)
     if (!code || code.length > 40) return json(200, { valid: false })
 
     try {
@@ -186,14 +217,19 @@ exports.handler = async (event) => {
 
         const found = await lookupDiscount(sheets, code, bookingRows)
         if (!found) return json(200, { valid: false })
+        if (found.clubOnly && !clubs.includes(clubKey(found.clubOnly))) {
+            return json(200, { valid: false, reason: "club", club: found.clubOnly })
+        }
         return json(200, {
             valid: true,
             code: found.code,
             percent: found.percent,
             freeTicket: found.freeTicket,
+            amountOff: found.amountOff,
             freeMeals: found.freeMeals,
             freeClothing: found.freeClothing,
             freeBottle: found.freeBottle,
+            clubOnly: found.clubOnly,
         })
     } catch (err) {
         console.error("[check-discount] failed:", err)
